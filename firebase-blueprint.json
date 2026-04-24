@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "Form": {
+      "title": "Form",
+      "description": "Form structure definition",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" },
+        "questions": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "settings": { "type": "object" }
+      },
+      "required": ["title", "creatorId", "createdAt", "updatedAt", "questions"]
+    },
+    "Response": {
+      "title": "Response",
+      "description": "Form response data",
+      "type": "object",
+      "properties": {
+        "formId": { "type": "string" },
+        "respondentEmail": { "type": "string" },
+        "submittedAt": { "type": "number" },
+        "answers": { "type": "object" }
+      },
+      "required": ["formId", "submittedAt", "answers"]
+    }
+  },
+  "firestore": {
+    "/forms/{formId}": {
+      "schema": "Form",
+      "description": "Collection of forms"
+    },
+    "/forms/{formId}/responses/{responseId}": {
+      "schema": "Response",
+      "description": "Collection of responses for a specific form"
+    }
+  }
+}
