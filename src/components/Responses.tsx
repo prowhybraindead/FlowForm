@@ -1,15 +1,13 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Form, Response } from '../types';
 import { getFormRecord, listResponsesForForm } from '../lib/formsApi';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
-import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend } from 'recharts';
-import { ArrowLeft, Users, MessageSquare, Download, Clock, Globe, Activity } from 'lucide-react';
-import { DarkModeToggle } from './DarkModeToggle';
-import { useDarkMode } from '../hooks/useDarkMode';
+import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, LineChart, Line, CartesianGrid } from 'recharts';
+import { ArrowLeft, Users, MessageSquare, Download, Clock, Globe, Activity, GitBranch } from 'lucide-react';
 
 interface ResponsesProps {
   formId: string;
@@ -17,9 +15,9 @@ interface ResponsesProps {
 }
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
+const HEAT_COLORS = ['#f3f4f6', '#fee2e2', '#fecaca', '#fca5a5', '#f87171', '#ef4444'];
 
 export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
-  const { isDark } = useDarkMode();
   const [form, setForm] = useState<Form | null>(null);
   const [responses, setResponses] = useState<Response[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,33 +75,364 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
       .map(([text, value]) => ({ text, value }));
   };
 
+  const branchingAnalytics = useMemo(() => {
+    if (!form) {
+      return {
+        hasSections: false,
+        transitions: [] as Array<{ from: string; to: string; count: number; percentage: number }>,
+        sectionVisits: [] as Array<{ sectionId: string; sectionTitle: string; visits: number }>,
+        submitRoutes: 0,
+        simulatedResponses: 0,
+        cycleStops: 0,
+        sectionFunnel: [] as Array<{ sectionId: string; sectionTitle: string; reached: number; reachRate: number; exitToSubmit: number; exitRate: number }>,
+        branchOptionFunnel: [] as Array<{ questionId: string; questionTitle: string; optionLabel: string; targetLabel: string; count: number; percentage: number }>,
+        dropoffHeatmap: [] as Array<{ sectionId: string; sectionTitle: string; dropoffRate: number; exitToSubmit: number; forwardMoves: number; backwardMoves: number; visits: number }>,
+        completionTrend: [] as Array<{ date: string; count: number; cumulative: number }>,
+        abandonedVisits: 0,
+        responsePaths: {} as Record<string, { path: string; outcome: string; visitedSections: number }>,
+      };
+    }
+
+    const sections: Array<{ id: string; title: string; questions: Form['questions']; isDefault: boolean }> = [];
+    let currentSection = {
+      id: '__default__',
+      title: form.title || 'Form start',
+      questions: [] as Form['questions'],
+      isDefault: true,
+    };
+    let sawSectionMarker = false;
+
+    form.questions.forEach((question) => {
+      if (question.type === 'section') {
+        if (currentSection.questions.length > 0) {
+          sections.push(currentSection);
+        }
+        currentSection = {
+          id: question.id,
+          title: question.title || 'Untitled section',
+          questions: [],
+          isDefault: false,
+        };
+        sections.push(currentSection);
+        sawSectionMarker = true;
+        return;
+      }
+      currentSection.questions.push(question);
+    });
+
+    if (!sawSectionMarker && currentSection.questions.length > 0) {
+      sections.push(currentSection);
+    }
+
+    const hasSections = sections.some((section) => !section.isDefault);
+    const sectionIndexMap = new Map(sections.map((section, index) => [section.id, index]));
+    const titleById = new Map(sections.map((section) => [section.id, section.title]));
+    const transitionCounts = new Map<string, number>();
+    const visitCounts = new Map<string, number>();
+    const sectionReachCounts = new Map<string, number>();
+    const sectionTransitionSummary = new Map<string, { submit: number; forward: number; backward: number }>();
+    const optionSelectionCounts = new Map<string, number>();
+    const responsePaths: Record<string, { path: string; outcome: string; visitedSections: number }> = {};
+    let submitRoutes = 0;
+    let cycleStops = 0;
+
+    const branchingQuestions = form.questions.filter((question) => {
+      if (question.type !== 'multiple_choice' && question.type !== 'dropdown') return false;
+      if (!question.options?.length) return false;
+      return Boolean(question.branchToSectionId || question.optionBranchToSectionIds?.some(Boolean));
+    });
+
+    const hasAnswer = (value: unknown) => (
+      Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== ''
+    );
+
+    const resolveQuestionTarget = (answers: Response['answers'], question: Form['questions'][number]) => {
+      const answerValue = answers[question.id];
+      if (!hasAnswer(answerValue)) {
+        return { target: '' as string | '__submit__' | '', optionIndex: -1 };
+      }
+
+      if (question.type === 'multiple_choice' || question.type === 'dropdown') {
+        const optionIndex = typeof answerValue === 'string'
+          ? (question.options?.findIndex((option) => option === answerValue) ?? -1)
+          : -1;
+        const optionTarget = optionIndex >= 0 ? question.optionBranchToSectionIds?.[optionIndex] : undefined;
+        if (optionTarget) {
+          return { target: optionTarget, optionIndex };
+        }
+      }
+
+      return { target: question.branchToSectionId || '', optionIndex: -1 };
+    };
+
+    const recordTransition = (fromId: string, toId: string) => {
+      const key = `${fromId}::${toId}`;
+      transitionCounts.set(key, (transitionCounts.get(key) || 0) + 1);
+      if (toId === '__submit__') {
+        submitRoutes += 1;
+      }
+
+      const summary = sectionTransitionSummary.get(fromId) || { submit: 0, forward: 0, backward: 0 };
+      if (toId === '__submit__') {
+        summary.submit += 1;
+      } else {
+        const fromIndex = sectionIndexMap.get(fromId) ?? -1;
+        const toIndex = sectionIndexMap.get(toId) ?? -1;
+        if (toIndex > fromIndex) {
+          summary.forward += 1;
+        } else {
+          summary.backward += 1;
+        }
+      }
+      sectionTransitionSummary.set(fromId, summary);
+    };
+
+    responses.forEach((response) => {
+      if (sections.length === 0) return;
+
+      branchingQuestions.forEach((question) => {
+        const answer = response.answers[question.id];
+        if (typeof answer !== 'string') return;
+        const optionIndex = question.options?.findIndex((option) => option === answer) ?? -1;
+        if (optionIndex < 0) return;
+        const key = `${question.id}::${optionIndex}`;
+        optionSelectionCounts.set(key, (optionSelectionCounts.get(key) || 0) + 1);
+      });
+
+      const maxHops = Math.max(sections.length * 3, 6);
+      const visitedInOrder: string[] = [];
+      const uniqueVisited = new Set<string>();
+      let hops = 0;
+      let currentIndex = 0;
+      let outcome = 'submitted';
+
+      while (currentIndex >= 0 && currentIndex < sections.length && hops < maxHops) {
+        hops += 1;
+        const section = sections[currentIndex];
+        visitedInOrder.push(section.id);
+        uniqueVisited.add(section.id);
+        visitCounts.set(section.id, (visitCounts.get(section.id) || 0) + 1);
+
+        let targetId: string | '__submit__' | '' = '';
+        for (let idx = section.questions.length - 1; idx >= 0; idx -= 1) {
+          const nextTarget = resolveQuestionTarget(response.answers, section.questions[idx]).target;
+          if (nextTarget) {
+            targetId = nextTarget;
+            break;
+          }
+        }
+
+        if (targetId === '__submit__') {
+          recordTransition(section.id, '__submit__');
+          outcome = 'submitted';
+          break;
+        }
+
+        if (targetId && sectionIndexMap.has(targetId)) {
+          recordTransition(section.id, targetId);
+          currentIndex = sectionIndexMap.get(targetId)!;
+          continue;
+        }
+
+        const nextIndex = currentIndex + 1;
+        if (nextIndex < sections.length) {
+          const nextSectionId = sections[nextIndex].id;
+          recordTransition(section.id, nextSectionId);
+          currentIndex = nextIndex;
+        } else {
+          recordTransition(section.id, '__submit__');
+          outcome = 'submitted';
+          break;
+        }
+      }
+
+      if (hops >= Math.max(sections.length * 3, 6)) {
+        cycleStops += 1;
+        outcome = 'cycle-stop';
+      }
+
+      uniqueVisited.forEach((sectionId) => {
+        sectionReachCounts.set(sectionId, (sectionReachCounts.get(sectionId) || 0) + 1);
+      });
+
+      const readablePath = visitedInOrder.length > 0
+        ? `${visitedInOrder.map((sectionId) => titleById.get(sectionId) || 'Unknown').join(' -> ')} -> ${outcome === 'cycle-stop' ? 'Safety stop' : 'Submit form'}`
+        : 'No section visited';
+      responsePaths[response.id] = {
+        path: readablePath,
+        outcome,
+        visitedSections: uniqueVisited.size,
+      };
+    });
+
+    const totalTransitions = Array.from(transitionCounts.values()).reduce((acc, value) => acc + value, 0);
+    const transitions = Array.from(transitionCounts.entries())
+      .map(([key, count]) => {
+        const [fromId, toId] = key.split('::');
+        return {
+          from: titleById.get(fromId) || 'Unknown',
+          to: toId === '__submit__' ? 'Submit form' : (titleById.get(toId) || 'Unknown section'),
+          count,
+          percentage: totalTransitions > 0 ? Math.round((count / totalTransitions) * 100) : 0,
+        };
+      })
+      .sort((a, b) => b.count - a.count);
+
+    const sectionVisits = sections
+      .map((section) => ({
+        sectionId: section.id,
+        sectionTitle: section.title,
+        visits: visitCounts.get(section.id) || 0,
+      }))
+      .sort((a, b) => b.visits - a.visits);
+
+    const sectionFunnel = sections.map((section) => {
+      const reached = sectionReachCounts.get(section.id) || 0;
+      const summary = sectionTransitionSummary.get(section.id) || { submit: 0, forward: 0, backward: 0 };
+      return {
+        sectionId: section.id,
+        sectionTitle: section.title,
+        reached,
+        reachRate: responses.length > 0 ? Math.round((reached / responses.length) * 100) : 0,
+        exitToSubmit: summary.submit,
+        exitRate: reached > 0 ? Math.round((summary.submit / reached) * 100) : 0,
+      };
+    });
+
+    const branchOptionFunnel = branchingQuestions.flatMap((question) => {
+      const totalSelections = question.options?.reduce((acc, _, optionIndex) => {
+        const key = `${question.id}::${optionIndex}`;
+        return acc + (optionSelectionCounts.get(key) || 0);
+      }, 0) || 0;
+
+      return (question.options || []).map((optionLabel, optionIndex) => {
+        const key = `${question.id}::${optionIndex}`;
+        const count = optionSelectionCounts.get(key) || 0;
+        const targetId = question.optionBranchToSectionIds?.[optionIndex];
+        const targetLabel = targetId === '__submit__'
+          ? 'Submit form'
+          : (targetId ? (titleById.get(targetId) || 'Unknown section') : 'Default next section');
+        return {
+          questionId: question.id,
+          questionTitle: question.title || 'Untitled question',
+          optionLabel,
+          targetLabel,
+          count,
+          percentage: totalSelections > 0 ? Math.round((count / totalSelections) * 100) : 0,
+        };
+      });
+    });
+
+    const dropoffHeatmap = sections.map((section) => {
+      const sectionSummary = sectionTransitionSummary.get(section.id) || { submit: 0, forward: 0, backward: 0 };
+      const visits = visitCounts.get(section.id) || 0;
+      const dropoffRate = visits > 0 ? Math.round((sectionSummary.submit / visits) * 100) : 0;
+      return {
+        sectionId: section.id,
+        sectionTitle: section.title,
+        dropoffRate,
+        exitToSubmit: sectionSummary.submit,
+        forwardMoves: sectionSummary.forward,
+        backwardMoves: sectionSummary.backward,
+        visits,
+      };
+    });
+
+    const dailyCountMap = responses.reduce((acc, response) => {
+      const date = new Date(response.submittedAt).toISOString().slice(0, 10);
+      acc.set(date, (acc.get(date) || 0) + 1);
+      return acc;
+    }, new Map<string, number>());
+    let cumulative = 0;
+    const completionTrend = Array.from(dailyCountMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, count]) => {
+        cumulative += count;
+        return { date, count, cumulative };
+      });
+
+    return {
+      hasSections,
+      transitions,
+      sectionVisits,
+      submitRoutes,
+      simulatedResponses: responses.length,
+      cycleStops,
+      sectionFunnel,
+      branchOptionFunnel,
+      dropoffHeatmap,
+      completionTrend,
+      abandonedVisits: Math.max((form.views || 0) - responses.length, 0),
+      responsePaths,
+    };
+  }, [form, responses]);
+
   const exportToCSV = () => {
     if (!form || responses.length === 0) return;
 
-    const headers = ['Submitted At', ...form.questions.map(q => q.title)];
-    
-    const rows = responses.map(r => {
-      const row = [new Date(r.submittedAt).toISOString()];
-      form.questions.forEach(q => {
-        let answer = r.answers[q.id];
-        if (Array.isArray(answer)) {
-          answer = answer.join('; ');
-        }
-        let formattedAnswer = answer ? String(answer).replace(/"/g, '""') : '';
-        if (formattedAnswer.includes(',') || formattedAnswer.includes('"') || formattedAnswer.includes('\n')) {
-          formattedAnswer = `"${formattedAnswer}"`;
-        }
-        row.push(formattedAnswer);
+    const escapeCSV = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const lines: string[] = [];
+
+    lines.push(
+      [
+        'Response ID',
+        'Submitted At',
+        'Route Path',
+        'Outcome',
+        'Visited Sections',
+        ...form.questions.map((q) => q.title),
+      ].map(escapeCSV).join(',')
+    );
+
+    responses.forEach((response) => {
+      const meta = branchingAnalytics.responsePaths[response.id];
+      const row: string[] = [
+        response.id,
+        new Date(response.submittedAt).toISOString(),
+        meta?.path || '',
+        meta?.outcome || 'submitted',
+        String(meta?.visitedSections ?? 0),
+      ];
+      form.questions.forEach((question) => {
+        const answer = response.answers[question.id];
+        row.push(Array.isArray(answer) ? answer.join('; ') : (answer ?? ''));
       });
-      return row.join(',');
+      lines.push(row.map(escapeCSV).join(','));
     });
 
-    const csvContent = [headers.map(h => `"${String(h).replace(/"/g, '""')}"`).join(','), ...rows].join('\n');
+    if (branchingAnalytics.sectionFunnel.length > 0) {
+      lines.push('');
+      lines.push(['Section Funnel'].map(escapeCSV).join(','));
+      lines.push(['Section', 'Reached', 'Reach Rate %', 'Exit to Submit', 'Exit Rate %'].map(escapeCSV).join(','));
+      branchingAnalytics.sectionFunnel.forEach((item) => {
+        lines.push([item.sectionTitle, item.reached, item.reachRate, item.exitToSubmit, item.exitRate].map(escapeCSV).join(','));
+      });
+    }
+
+    if (branchingAnalytics.branchOptionFunnel.length > 0) {
+      lines.push('');
+      lines.push(['Branch Option Funnel'].map(escapeCSV).join(','));
+      lines.push(['Question', 'Option', 'Target', 'Count', 'Share %'].map(escapeCSV).join(','));
+      branchingAnalytics.branchOptionFunnel.forEach((item) => {
+        lines.push([item.questionTitle, item.optionLabel, item.targetLabel, item.count, item.percentage].map(escapeCSV).join(','));
+      });
+    }
+
+    if (branchingAnalytics.completionTrend.length > 0) {
+      lines.push('');
+      lines.push(['Completion Trend'].map(escapeCSV).join(','));
+      lines.push(['Date', 'Responses', 'Cumulative'].map(escapeCSV).join(','));
+      branchingAnalytics.completionTrend.forEach((item) => {
+        lines.push([item.date, item.count, item.cumulative].map(escapeCSV).join(','));
+      });
+    }
+
+    const csvContent = lines.join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `${form.title.replace(/\s+/g, '_')}_responses.csv`);
+    link.setAttribute('download', `${form.title.replace(/\s+/g, '_')}_analytics.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -131,7 +460,6 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
           </div>
         </div>
         <div className="flex items-center gap-4 shrink-0">
-          <DarkModeToggle />
           <Button 
             onClick={exportToCSV}
             disabled={responses.length === 0}
@@ -299,6 +627,185 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-8">
+          {branchingAnalytics.hasSections && (
+            <Card className="rounded-[32px] border border-natural-border shadow-sm p-8 bg-white">
+              <CardHeader className="p-0 pb-6">
+                <CardTitle className="text-2xl flex items-center gap-2">
+                  <GitBranch className="h-6 w-6 text-natural-primary" />
+                  Branching Analytics
+                </CardTitle>
+                <CardDescription>
+                  Route usage across sections and submit paths ({branchingAnalytics.simulatedResponses} responses).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-0 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="rounded-2xl border border-natural-border bg-natural-bg/60 p-4">
+                    <p className="text-xs uppercase tracking-widest text-natural-muted">Top Route</p>
+                    <p className="text-sm font-semibold text-natural-text mt-1">
+                      {branchingAnalytics.transitions[0]
+                        ? `${branchingAnalytics.transitions[0].from} -> ${branchingAnalytics.transitions[0].to}`
+                        : 'No route data'}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-natural-border bg-natural-bg/60 p-4">
+                    <p className="text-xs uppercase tracking-widest text-natural-muted">Submit Route Hits</p>
+                    <p className="text-2xl font-bold text-natural-primary mt-1">{branchingAnalytics.submitRoutes}</p>
+                  </div>
+                  <div className="rounded-2xl border border-natural-border bg-natural-bg/60 p-4">
+                    <p className="text-xs uppercase tracking-widest text-natural-muted">Cycle Safety Stops</p>
+                    <p className="text-2xl font-bold text-natural-primary mt-1">{branchingAnalytics.cycleStops}</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className="rounded-2xl border border-natural-border p-4">
+                    <p className="text-sm font-semibold text-natural-text mb-3">Most Used Routes</p>
+                    <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1">
+                      {branchingAnalytics.transitions.slice(0, 12).map((transition) => (
+                        <div key={`${transition.from}-${transition.to}`} className="flex items-center justify-between rounded-xl bg-natural-bg/70 px-3 py-2">
+                          <p className="text-sm text-natural-text">
+                            {transition.from} <span className="text-natural-muted">→</span> {transition.to}
+                          </p>
+                          <div className="text-right">
+                            <p className="text-sm font-semibold text-natural-primary">{transition.count}</p>
+                            <p className="text-[11px] text-natural-muted">{transition.percentage}%</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-natural-border p-4">
+                    <p className="text-sm font-semibold text-natural-text mb-3">Section Visit Count</p>
+                    <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1">
+                      {branchingAnalytics.sectionVisits.map((section) => (
+                        <div key={section.sectionId} className="flex items-center justify-between rounded-xl bg-natural-bg/70 px-3 py-2">
+                          <p className="text-sm text-natural-text">{section.sectionTitle}</p>
+                          <p className="text-sm font-semibold text-natural-primary">{section.visits}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {branchingAnalytics.sectionFunnel.length > 0 && (
+            <Card className="rounded-[32px] border border-natural-border shadow-sm p-8 bg-white">
+              <CardHeader className="p-0 pb-6">
+                <CardTitle className="text-2xl">Section Funnel</CardTitle>
+                <CardDescription>Reach rate and early submit exits by section.</CardDescription>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="h-[340px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={branchingAnalytics.sectionFunnel} margin={{ left: 16, right: 20, top: 10, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="sectionTitle" tick={{ fontSize: 11 }} interval={0} angle={-15} textAnchor="end" height={70} />
+                      <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
+                      <Tooltip contentStyle={{ borderRadius: '16px', border: '1px solid #E5E5E5', boxShadow: '0 4px 16px rgba(0,0,0,0.08)' }} />
+                      <Legend />
+                      <Bar dataKey="reachRate" name="Reach %" fill="#5C6351" radius={[8, 8, 0, 0]} />
+                      <Bar dataKey="exitRate" name="Exit to Submit %" fill="#C97A63" radius={[8, 8, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {branchingAnalytics.branchOptionFunnel.length > 0 && (
+            <Card className="rounded-[32px] border border-natural-border shadow-sm p-8 bg-white">
+              <CardHeader className="p-0 pb-6">
+                <CardTitle className="text-2xl">Branch Option Funnel</CardTitle>
+                <CardDescription>Distribution of answer options on branch-enabled questions.</CardDescription>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                  {branchingAnalytics.branchOptionFunnel
+                    .filter((item) => item.count > 0)
+                    .sort((a, b) => b.count - a.count)
+                    .map((item) => (
+                      <div key={`${item.questionId}-${item.optionLabel}`} className="rounded-2xl border border-natural-border bg-natural-bg/60 p-4">
+                        <p className="text-xs uppercase tracking-widest text-natural-muted">{item.questionTitle}</p>
+                        <div className="mt-2 flex items-start justify-between gap-4">
+                          <div>
+                            <p className="text-sm font-semibold text-natural-text">{item.optionLabel}</p>
+                            <p className="text-xs text-natural-muted mt-1">Target: {item.targetLabel}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm font-semibold text-natural-primary">{item.count}</p>
+                            <p className="text-xs text-natural-muted">{item.percentage}%</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {branchingAnalytics.dropoffHeatmap.length > 0 && (
+            <Card className="rounded-[32px] border border-natural-border shadow-sm p-8 bg-white">
+              <CardHeader className="p-0 pb-6">
+                <CardTitle className="text-2xl">Drop-off Heatmap</CardTitle>
+                <CardDescription>
+                  Exit-to-submit intensity by section. Estimated unsubmitted views: {branchingAnalytics.abandonedVisits}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="space-y-3">
+                  {branchingAnalytics.dropoffHeatmap.map((item) => {
+                    const intensity = Math.min(5, Math.floor(item.dropoffRate / 20));
+                    return (
+                      <div
+                        key={item.sectionId}
+                        className="rounded-2xl border border-natural-border p-4"
+                        style={{ backgroundColor: HEAT_COLORS[intensity] }}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-natural-text">{item.sectionTitle}</p>
+                          <p className="text-xs text-natural-muted">Drop-off {item.dropoffRate}%</p>
+                        </div>
+                        <div className="mt-2 text-xs text-natural-muted flex flex-wrap gap-3">
+                          <span>Visits: {item.visits}</span>
+                          <span>Exit to submit: {item.exitToSubmit}</span>
+                          <span>Forward moves: {item.forwardMoves}</span>
+                          <span>Backward moves: {item.backwardMoves}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {branchingAnalytics.completionTrend.length > 0 && (
+            <Card className="rounded-[32px] border border-natural-border shadow-sm p-8 bg-white">
+              <CardHeader className="p-0 pb-6">
+                <CardTitle className="text-2xl">Completion Trend</CardTitle>
+                <CardDescription>Daily response volume and cumulative growth over time.</CardDescription>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="h-[320px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={branchingAnalytics.completionTrend} margin={{ left: 10, right: 20, top: 10, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip contentStyle={{ borderRadius: '16px', border: '1px solid #E5E5E5', boxShadow: '0 4px 16px rgba(0,0,0,0.08)' }} />
+                      <Legend />
+                      <Line type="monotone" dataKey="count" name="Responses/day" stroke="#5C6351" strokeWidth={2.5} dot={{ r: 3 }} />
+                      <Line type="monotone" dataKey="cumulative" name="Cumulative" stroke="#C97A63" strokeWidth={2.5} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <Card className="rounded-[32px] border border-natural-border shadow-sm overflow-hidden flex flex-col justify-center items-center p-8 text-center bg-white">
               <Activity className="h-10 w-10 text-natural-primary mb-4" />

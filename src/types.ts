@@ -1,4 +1,4 @@
-export type QuestionType = 'short_answer' | 'paragraph' | 'multiple_choice' | 'checkbox' | 'dropdown' | 'date' | 'time' | 'email' | 'number' | 'image_upload';
+export type QuestionType = 'short_answer' | 'paragraph' | 'multiple_choice' | 'checkbox' | 'dropdown' | 'date' | 'time' | 'email' | 'number' | 'image_upload' | 'section';
 
 export interface Condition {
   questionId: string;
@@ -12,9 +12,12 @@ export interface Question {
   title: string;
   description?: string;
   required: boolean;
+  image?: string;
   options?: string[]; // For multiple_choice, checkbox, dropdown
   optionImages?: string[]; // Array of base64 strings corresponding to options index
+  optionBranchToSectionIds?: Array<string | '__submit__'>;
   hasOtherOption?: boolean;
+  branchToSectionId?: string | '__submit__';
   validation?: {
     min?: number;
     max?: number;
@@ -63,16 +66,41 @@ export interface Form {
     redirectUrlAfterSubmit?: string;
     showProgressBar?: boolean;
     showOwnerProfile?: boolean;
+    enforceForwardRoutes?: boolean;
   };
   theme?: {
     accentColor?: string;
     headerImage?: string;
+    headerImageFit?: 'contain' | 'cover';
+    headerImagePosition?: 'center' | 'top' | 'bottom' | 'left' | 'right';
     backgroundColor?: string;
     titleFont?: string;
     bodyFont?: string;
     logo?: string;
   };
   views?: number;
+}
+
+export type CollaboratorRole = 'owner' | 'editor' | 'viewer';
+
+export interface FormCollaborator {
+  formId: string;
+  userId: string;
+  role: CollaboratorRole;
+  createdAt: string;
+  displayName?: string;
+  avatarUrl?: string;
+}
+
+export interface FormAuditEvent {
+  id: string;
+  formId: string;
+  actorUserId?: string;
+  eventType: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+  actorDisplayName?: string;
+  actorAvatarUrl?: string;
 }
 
 export interface UserProfile {

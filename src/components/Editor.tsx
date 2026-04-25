@@ -1,10 +1,12 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useFormStore } from '../store/useFormStore';
-import { Question, QuestionType } from '../types';
-import { getFormRecord, updateFormRecord } from '../lib/formsApi';
+import { CollaboratorRole, FormAuditEvent, FormCollaborator, Question, QuestionType } from '../types';
+import { getFormAccessRole, getFormRecord, listFormAuditEvents, listFormCollaborators, removeFormCollaborator, resolveCollaboratorUserIdByEmail, updateFormRecord, upsertFormCollaborator } from '../lib/formsApi';
 import { uploadImageAsset } from '../lib/imageUpload';
+import { isFormClosedBySettings } from '../lib/formStatus';
+import { useAuthStore } from '../store/useAuthStore';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent } from './ui/card';
@@ -12,8 +14,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { QRCodeSVG } from 'qrcode.react';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { DarkModeToggle } from './DarkModeToggle';
-import { useDarkMode } from '../hooks/useDarkMode';
 import { 
   Plus, 
   Trash2, 
@@ -40,11 +40,17 @@ import {
   Mail,
   Hash,
   GitBranch,
+  Route,
+  AlertTriangle,
   History,
+  UserRound,
+  UserPlus,
+  Shield,
   RotateCcw,
   Info,
   Undo2,
-  Redo2
+  Redo2,
+  SeparatorHorizontal
 } from 'lucide-react';
 import {
   DndContext,
@@ -55,6 +61,8 @@ import {
   useSensor,
   useSensors,
   DragEndEvent,
+  DragStartEvent,
+  DragCancelEvent,
 } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -73,6 +81,7 @@ import {
 import { Switch } from './ui/switch';
 import { Label } from './ui/label';
 import { toast } from 'sonner';
+import { AnimatePresence, motion } from 'motion/react';
 
 const SaveStatus = ({ autoSaving, lastSavedAt }: { autoSaving: boolean, lastSavedAt: Date | null }) => {
   const [timeStr, setTimeStr] = useState<string>('Not saved');
@@ -135,6 +144,7 @@ interface EditorProps {
 }
 
 const QUESTION_TYPES: { type: QuestionType, label: string, icon: any }[] = [
+  { type: 'section', label: 'Section', icon: SeparatorHorizontal },
   { type: 'short_answer', label: 'Short answer', icon: Type },
   { type: 'paragraph', label: 'Paragraph', icon: AlignLeft },
   { type: 'multiple_choice', label: 'Multiple choice', icon: CircleDot },
@@ -150,11 +160,40 @@ const QUESTION_TYPES: { type: QuestionType, label: string, icon: any }[] = [
 const FONT_OPTIONS = [
   { label: 'System Default (Inter)', value: 'var(--font-sans)', name: 'sans' },
   { label: 'Serif (Playfair Display)', value: 'var(--font-serif)', name: 'serif' },
-  { label: 'Monospace', value: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', name: 'mono' },
+  { label: 'Modern UI (Segoe)', value: '"Segoe UI", "Inter", ui-sans-serif, system-ui, sans-serif', name: 'segoe' },
+  { label: 'Classic Sans (Helvetica)', value: '"Helvetica Neue", Helvetica, Arial, sans-serif', name: 'helvetica' },
+  { label: 'Readable Sans (Verdana)', value: 'Verdana, Geneva, Tahoma, sans-serif', name: 'verdana' },
+  { label: 'Humanist Sans (Trebuchet)', value: '"Trebuchet MS", "Lucida Grande", "Lucida Sans Unicode", sans-serif', name: 'trebuchet' },
+  { label: 'Elegant Serif (Georgia)', value: 'Georgia, "Times New Roman", Times, serif', name: 'georgia' },
+  { label: 'Book Serif (Garamond)', value: 'Garamond, "Times New Roman", serif', name: 'garamond' },
+  { label: 'Slab Serif (Cambria)', value: 'Cambria, Cochin, Georgia, Times, serif', name: 'cambria' },
+  { label: 'Monospace (Code)', value: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace', name: 'mono' },
+  { label: 'Rounded Sans', value: '"Arial Rounded MT Bold", "Nunito", "Avenir Next", "Segoe UI", sans-serif', name: 'rounded' },
+  { label: 'Condensed Sans', value: '"Arial Narrow", "Roboto Condensed", "Segoe UI", sans-serif', name: 'condensed' },
 ];
 
+type EditorFlowSection = {
+  id: string;
+  title: string;
+  questions: Question[];
+  isDefault: boolean;
+};
+
+type EditorFlowEdge = {
+  type: 'sequential' | 'branch';
+  targetId: string | '__submit__';
+  label: string;
+};
+
+type EditorFlowWarning = {
+  type: 'invalid_target' | 'empty_option_target' | 'unreachable_section' | 'backward_route' | 'possible_cycle';
+  message: string;
+  questionId?: string;
+  sectionId?: string;
+};
+
 export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => {
-  const { isDark } = useDarkMode();
+  const { user } = useAuthStore();
   const { currentForm, setCurrentForm, updateForm, updateQuestion, removeQuestion, duplicateQuestion, addQuestion, reorderQuestions, undo, redo, canUndo, canRedo } = useFormStore();
   const [saving, setSaving] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
@@ -165,6 +204,18 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [newVersionName, setNewVersionName] = useState('');
   const [savingVersion, setSavingVersion] = useState(false);
+  const [activeDragQuestionId, setActiveDragQuestionId] = useState<string | null>(null);
+  const [accessRole, setAccessRole] = useState<CollaboratorRole | null>(null);
+  const [collaborators, setCollaborators] = useState<FormCollaborator[]>([]);
+  const [auditEvents, setAuditEvents] = useState<FormAuditEvent[]>([]);
+  const [collaborationLoading, setCollaborationLoading] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<Exclude<CollaboratorRole, 'owner'>>('editor');
+  const [inviting, setInviting] = useState(false);
+
+  const canManageCollaborators = accessRole === 'owner';
+  const canEditForm = accessRole === 'owner' || accessRole === 'editor';
 
   const handleDomainChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -183,11 +234,40 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     }
   };
 
+  const loadCollaborators = async () => {
+    try {
+      setCollaborationLoading(true);
+      setCollaborators(await listFormCollaborators(formId));
+    } catch (error) {
+      console.error('Failed to load collaborators:', error);
+    } finally {
+      setCollaborationLoading(false);
+    }
+  };
+
+  const loadAuditEvents = async () => {
+    try {
+      setAuditLoading(true);
+      setAuditEvents(await listFormAuditEvents(formId, 40));
+    } catch (error) {
+      console.error('Failed to load form audit timeline:', error);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
   useEffect(() => {
     const fetchForm = async () => {
       try {
         const remoteForm = await getFormRecord(formId);
         if (remoteForm) {
+          if (user?.uid) {
+            if (remoteForm.creatorId === user.uid) {
+              setAccessRole('owner');
+            } else {
+              setAccessRole(await getFormAccessRole(formId, user.uid));
+            }
+          }
           
           // Check for local draft
           const draftKey = `form_draft_${formId}`;
@@ -218,7 +298,13 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
       }
     };
     fetchForm();
-  }, [formId, setCurrentForm]);
+  }, [formId, setCurrentForm, user?.uid]);
+
+  useEffect(() => {
+    if (!accessRole) return;
+    void loadCollaborators();
+    void loadAuditEvents();
+  }, [accessRole, formId]);
 
   // Auto-save effect
   useEffect(() => {
@@ -242,7 +328,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   }, [canUndo, canRedo, undo, redo]);
 
   useEffect(() => {
-    if (!currentForm) return;
+    if (!currentForm || !canEditForm) return;
 
     // Save to local storage immediately on change
     const draftKey = `form_draft_${formId}`;
@@ -271,9 +357,9 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     }, 3000); // 3 seconds debounced
 
     return () => clearTimeout(timeout);
-  }, [currentForm, formId]);
+  }, [canEditForm, currentForm, formId]);
 
-  const isClosedForResponses = currentForm?.settings?.publishImmediately === false;
+  const isClosedForResponses = isFormClosedBySettings(currentForm?.settings);
 
   useEffect(() => {
     if (!currentForm) return;
@@ -295,6 +381,10 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
 
   const saveForm = async () => {
     if (!currentForm) return;
+    if (!canEditForm) {
+      toast.error('You have view-only access for this form.');
+      return;
+    }
     setSaving(true);
     try {
       await updateFormRecord(formId, {
@@ -304,6 +394,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
       localStorage.removeItem(`form_draft_${formId}`);
       setLastSavedAt(new Date());
       toast.success('Form saved successfully');
+      void loadAuditEvents();
     } catch (error) {
       console.error('Error saving form:', error);
       toast.error('Failed to save form');
@@ -314,6 +405,10 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
 
   const saveVersion = async () => {
     if (!currentForm || !newVersionName.trim()) return;
+    if (!canEditForm) {
+      toast.error('You have view-only access for this form.');
+      return;
+    }
     setSavingVersion(true);
     try {
       const { id, views, versions, ...formData } = currentForm;
@@ -334,6 +429,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
       setCurrentForm({ ...currentForm, versions: updatedVersions });
       setNewVersionName('');
       toast.success('Version saved');
+      void loadAuditEvents();
     } catch (error) {
       console.error('Error saving version:', error);
       toast.error('Failed to save version');
@@ -344,6 +440,10 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
 
   const restoreVersion = async (version: any) => {
     if (!currentForm) return;
+    if (!canEditForm) {
+      toast.error('You have view-only access for this form.');
+      return;
+    }
     if (!confirm('Are you sure you want to restore this version? Unsaved changes will be lost.')) return;
     
     try {
@@ -355,6 +455,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
       setCurrentForm({ ...currentForm, ...version.data });
       toast.success('Version restored');
       setHistoryOpen(false);
+      void loadAuditEvents();
     } catch (error) {
       console.error('Error restoring version:', error);
       toast.error('Failed to restore version');
@@ -380,11 +481,20 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+    setActiveDragQuestionId(null);
     if (active.id !== over?.id && currentForm) {
       const oldIndex = currentForm.questions.findIndex((q) => q.id === active.id);
       const newIndex = currentForm.questions.findIndex((q) => q.id === over?.id);
       reorderQuestions(arrayMove(currentForm.questions, oldIndex, newIndex));
     }
+  };
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveDragQuestionId(String(event.active.id));
+  };
+
+  const handleDragCancel = (_event: DragCancelEvent) => {
+    setActiveDragQuestionId(null);
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -423,16 +533,475 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     }
   };
 
+  const inviteCollaborator = async () => {
+    if (!canManageCollaborators) {
+      toast.error('Only the form owner can manage collaborators.');
+      return;
+    }
+
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email) return;
+
+    setInviting(true);
+    try {
+      const resolvedUserId = await resolveCollaboratorUserIdByEmail(formId, email);
+      if (!resolvedUserId) {
+        toast.error('No account found with that email.');
+        return;
+      }
+      if (currentForm?.creatorId === resolvedUserId) {
+        toast.error('The form owner already has full access.');
+        return;
+      }
+
+      await upsertFormCollaborator(formId, resolvedUserId, inviteRole);
+      setInviteEmail('');
+      toast.success('Collaborator added');
+      await loadCollaborators();
+      await loadAuditEvents();
+    } catch (error) {
+      console.error('Failed to invite collaborator:', error);
+      toast.error('Failed to add collaborator');
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const changeCollaboratorRole = async (targetUserId: string, role: Exclude<CollaboratorRole, 'owner'>) => {
+    if (!canManageCollaborators) return;
+    try {
+      await upsertFormCollaborator(formId, targetUserId, role);
+      toast.success('Role updated');
+      await loadCollaborators();
+      await loadAuditEvents();
+    } catch (error) {
+      console.error('Failed to update collaborator role:', error);
+      toast.error('Failed to update collaborator role');
+    }
+  };
+
+  const revokeCollaborator = async (targetUserId: string) => {
+    if (!canManageCollaborators) return;
+    try {
+      await removeFormCollaborator(formId, targetUserId);
+      toast.success('Collaborator removed');
+      await loadCollaborators();
+      await loadAuditEvents();
+    } catch (error) {
+      console.error('Failed to remove collaborator:', error);
+      toast.error('Failed to remove collaborator');
+    }
+  };
+
+  const removeInvalidRouteTargets = () => {
+    if (!currentForm) return;
+
+    const sectionIds = new Set(
+      currentForm.questions
+        .filter((question) => question.type === 'section')
+        .map((question) => question.id)
+    );
+
+    const nextQuestions = currentForm.questions.map((question) => {
+      let nextBranch = question.branchToSectionId;
+      if (nextBranch && nextBranch !== '__submit__' && !sectionIds.has(nextBranch)) {
+        nextBranch = undefined;
+      }
+
+      const nextOptionTargets = question.optionBranchToSectionIds?.map((target) => {
+        if (!target) return target;
+        if (target === '__submit__') return target;
+        return sectionIds.has(target) ? target : '';
+      });
+
+      return {
+        ...question,
+        branchToSectionId: nextBranch,
+        optionBranchToSectionIds: nextOptionTargets,
+      };
+    });
+
+    updateForm({ questions: nextQuestions });
+    toast.success('Removed invalid route targets');
+  };
+
+  const normalizeBackwardRoutes = () => {
+    if (!currentForm) return;
+
+    const sectionOrder = new Map<string, number>();
+    let currentSectionId = '__default__';
+    let sectionIndex = 0;
+    sectionOrder.set(currentSectionId, sectionIndex);
+
+    for (const question of currentForm.questions) {
+      if (question.type === 'section') {
+        sectionIndex += 1;
+        currentSectionId = question.id;
+        sectionOrder.set(currentSectionId, sectionIndex);
+      }
+      sectionOrder.set(question.id, sectionIndex);
+    }
+
+    let sourceSectionIndex = 0;
+    const nextQuestions = currentForm.questions.map((question) => {
+      if (question.type === 'section') {
+        sourceSectionIndex = sectionOrder.get(question.id) ?? sourceSectionIndex;
+        return question;
+      }
+
+      let nextBranch = question.branchToSectionId;
+      if (nextBranch && nextBranch !== '__submit__') {
+        const targetIndex = sectionOrder.get(nextBranch);
+        if (targetIndex !== undefined && targetIndex <= sourceSectionIndex) {
+          nextBranch = undefined;
+        }
+      }
+
+      const nextOptionTargets = question.optionBranchToSectionIds?.map((target) => {
+        if (!target || target === '__submit__') return target;
+        const targetIndex = sectionOrder.get(target);
+        if (targetIndex !== undefined && targetIndex <= sourceSectionIndex) {
+          return '';
+        }
+        return target;
+      });
+
+      return {
+        ...question,
+        branchToSectionId: nextBranch,
+        optionBranchToSectionIds: nextOptionTargets,
+      };
+    });
+
+    updateForm({ questions: nextQuestions });
+    toast.success('Converted backward/cyclic routes to safe forward flow');
+  };
+
+  const flowInsights = useMemo(() => {
+    if (!currentForm) {
+      return {
+        sections: [] as EditorFlowSection[],
+        warnings: [] as EditorFlowWarning[],
+        edgesBySection: {} as Record<string, EditorFlowEdge[]>,
+        unreachableSectionIds: new Set<string>(),
+      };
+    }
+
+    const questions = currentForm.questions || [];
+    const sections: EditorFlowSection[] = [];
+    let currentSection: EditorFlowSection = {
+      id: '__default__',
+      title: currentForm.title || 'Intro',
+      questions: [],
+      isDefault: true,
+    };
+    let sawSectionMarker = false;
+
+    questions.forEach((question) => {
+      if (question.type === 'section') {
+        if (currentSection.questions.length > 0) {
+          sections.push(currentSection);
+        }
+
+        currentSection = {
+          id: question.id,
+          title: question.title || 'Untitled section',
+          questions: [],
+          isDefault: false,
+        };
+        sections.push(currentSection);
+        sawSectionMarker = true;
+        return;
+      }
+
+      currentSection.questions.push(question);
+    });
+
+    if (!sawSectionMarker) {
+      sections.push(currentSection);
+    }
+
+    const realSectionIdSet = new Set(
+      questions
+        .filter((question) => question.type === 'section')
+        .map((question) => question.id)
+    );
+
+    const warnings: EditorFlowWarning[] = [];
+    const edgesBySection: Record<string, EditorFlowEdge[]> = {};
+
+    const hasAnyRouteConfig = (question: Question) => {
+      if (question.branchToSectionId) return true;
+      return Boolean(question.optionBranchToSectionIds?.some((target) => Boolean(target)));
+    };
+
+    const getGuaranteedTargets = (question: Question): Array<string | '__submit__'> | null => {
+      if (!question.required) return null;
+
+      if (question.type === 'multiple_choice' || question.type === 'dropdown') {
+        const options = question.options || [];
+        if (options.length === 0) return null;
+
+        const targets = options.map((_, index) => {
+          const optionTarget = question.optionBranchToSectionIds?.[index];
+          return (optionTarget || question.branchToSectionId || '') as string | '__submit__' | '';
+        });
+
+        if (question.hasOtherOption && !question.branchToSectionId) {
+          return null;
+        }
+
+        if (targets.some((target) => !target)) return null;
+        return Array.from(new Set(targets as Array<string | '__submit__'>));
+      }
+
+      if (!question.branchToSectionId) return null;
+      return [question.branchToSectionId];
+    };
+
+    const sectionIndexMap = new Map(sections.map((section, index) => [section.id, index]));
+    const questionSectionIndexById = new Map<string, number>();
+    let scanningSectionIndex = 0;
+    questions.forEach((question) => {
+      if (question.type === 'section') {
+        scanningSectionIndex = sectionIndexMap.get(question.id) ?? scanningSectionIndex;
+      }
+      questionSectionIndexById.set(question.id, scanningSectionIndex);
+    });
+
+    for (const question of questions) {
+      if (question.type === 'section') continue;
+      const sourceSectionIndex = questionSectionIndexById.get(question.id) ?? 0;
+
+      if (
+        question.branchToSectionId &&
+        question.branchToSectionId !== '__submit__' &&
+        !realSectionIdSet.has(question.branchToSectionId)
+      ) {
+        warnings.push({
+          type: 'invalid_target',
+          message: `Question "${question.title || 'Untitled question'}" routes to a missing section.`,
+          questionId: question.id,
+        });
+      }
+
+      if (
+        question.branchToSectionId &&
+        question.branchToSectionId !== '__submit__' &&
+        realSectionIdSet.has(question.branchToSectionId)
+      ) {
+        const targetIndex = sectionIndexMap.get(question.branchToSectionId);
+        if (targetIndex !== undefined && targetIndex <= sourceSectionIndex) {
+          warnings.push({
+            type: 'backward_route',
+            message: `Question "${question.title || 'Untitled question'}" routes backward and may create loops.`,
+            questionId: question.id,
+          });
+        }
+      }
+
+      const optionTargets = question.optionBranchToSectionIds || [];
+      const hasPartialOptionRouting = optionTargets.some((target) => Boolean(target));
+      if (hasPartialOptionRouting) {
+        (question.options || []).forEach((option, index) => {
+          const target = optionTargets[index];
+          if (!target) {
+            warnings.push({
+              type: 'empty_option_target',
+              message: `Question "${question.title || 'Untitled question'}" has empty route target on option "${option || `Option ${index + 1}`}".`,
+              questionId: question.id,
+            });
+          }
+        });
+      }
+
+      optionTargets.forEach((target) => {
+        if (!target || target === '__submit__') return;
+        if (!realSectionIdSet.has(target)) {
+          warnings.push({
+            type: 'invalid_target',
+            message: `Question "${question.title || 'Untitled question'}" has an option route to a missing section.`,
+            questionId: question.id,
+          });
+          return;
+        }
+
+        const targetIndex = sectionIndexMap.get(target);
+        if (targetIndex !== undefined && targetIndex <= sourceSectionIndex) {
+          warnings.push({
+            type: 'backward_route',
+            message: `Question "${question.title || 'Untitled question'}" has an option route that points backward.`,
+            questionId: question.id,
+          });
+        }
+      });
+    }
+
+    sections.forEach((section, index) => {
+      const edgeMap = new Map<string, EditorFlowEdge>();
+      const questionsInSection = section.questions;
+
+      const recordEdge = (edge: EditorFlowEdge) => {
+        const key = `${edge.type}:${edge.targetId}:${edge.label}`;
+        if (!edgeMap.has(key)) {
+          edgeMap.set(key, edge);
+        }
+      };
+
+      questionsInSection.forEach((question) => {
+        if (question.branchToSectionId) {
+          recordEdge({
+            type: 'branch',
+            targetId: question.branchToSectionId,
+            label: question.title || 'Untitled question',
+          });
+        }
+
+        (question.optionBranchToSectionIds || [])
+          .filter((target): target is string | '__submit__' => Boolean(target))
+          .forEach((target) => {
+            recordEdge({
+              type: 'branch',
+              targetId: target,
+              label: question.title || 'Untitled question',
+            });
+          });
+      });
+
+      const decisiveQuestion = [...questionsInSection].reverse().find((question) => hasAnyRouteConfig(question));
+      const guaranteedTargets = decisiveQuestion ? getGuaranteedTargets(decisiveQuestion) : null;
+
+      if (guaranteedTargets) {
+        guaranteedTargets.forEach((target) => {
+          recordEdge({
+            type: 'branch',
+            targetId: target,
+            label: `${decisiveQuestion!.title || 'Untitled question'} (forced)`,
+          });
+        });
+      } else {
+        const nextSection = sections[index + 1];
+        if (nextSection) {
+          recordEdge({
+            type: 'sequential',
+            targetId: nextSection.id,
+            label: 'Continue',
+          });
+        } else {
+          recordEdge({
+            type: 'sequential',
+            targetId: '__submit__',
+            label: 'End of form',
+          });
+        }
+      }
+
+      edgesBySection[section.id] = Array.from(edgeMap.values());
+    });
+
+    const startSectionId = sections[0]?.id;
+    const reachableSectionIds = new Set<string>();
+
+    if (startSectionId) {
+      const stack = [startSectionId];
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        if (reachableSectionIds.has(current)) continue;
+        reachableSectionIds.add(current);
+
+        (edgesBySection[current] || []).forEach((edge) => {
+          if (edge.targetId === '__submit__') return;
+          if (!sectionIndexMap.has(edge.targetId)) return;
+          stack.push(edge.targetId);
+        });
+      }
+    }
+
+    const unreachableSectionIds = sections
+      .filter((section) => section.id !== startSectionId && !reachableSectionIds.has(section.id))
+      .map((section) => section.id);
+
+    unreachableSectionIds.forEach((sectionId) => {
+      const section = sections.find((candidate) => candidate.id === sectionId);
+      if (!section) return;
+      warnings.push({
+        type: 'unreachable_section',
+        message: `Section "${section.title}" is unreachable from the current flow.`,
+        sectionId,
+      });
+    });
+
+    const graph = new Map<string, string[]>();
+    sections.forEach((section) => {
+      const targets = (edgesBySection[section.id] || [])
+        .map((edge) => edge.targetId)
+        .filter((target): target is string => target !== '__submit__' && sectionIndexMap.has(target));
+      graph.set(section.id, targets);
+    });
+
+    const seen = new Set<string>();
+    const active = new Set<string>();
+    const dfsCycle = (node: string): boolean => {
+      if (active.has(node)) return true;
+      if (seen.has(node)) return false;
+      seen.add(node);
+      active.add(node);
+      for (const neighbor of graph.get(node) || []) {
+        if (dfsCycle(neighbor)) return true;
+      }
+      active.delete(node);
+      return false;
+    };
+
+    const cycleDetected = sections.some((section) => dfsCycle(section.id));
+    if (cycleDetected) {
+      warnings.push({
+        type: 'possible_cycle',
+        message: 'Detected a possible section cycle. Respondents may get stuck in a loop.',
+      });
+    }
+
+    return {
+      sections,
+      warnings,
+      edgesBySection,
+      unreachableSectionIds: new Set(unreachableSectionIds),
+    };
+  }, [currentForm?.questions, currentForm?.title]);
+
   if (!currentForm) return <div>Loading...</div>;
 
   const shareUrl = currentForm.settings?.customDomain
     ? `${currentForm.settings.customDomain.replace(/\/$/, '')}/f/${formId}` 
     : `${window.location.origin}/f/${formId}`;
+  const headerImageFit = currentForm.theme?.headerImageFit || 'contain';
+  const headerImagePosition = currentForm.theme?.headerImagePosition || 'center';
+  const headerImageObjectPosition =
+    headerImagePosition === 'top'
+      ? 'top center'
+      : headerImagePosition === 'bottom'
+        ? 'bottom center'
+        : headerImagePosition === 'left'
+          ? 'center left'
+          : headerImagePosition === 'right'
+            ? 'center right'
+            : 'center center';
+  const hasInvalidTargetWarnings = flowInsights.warnings.some((warning) => warning.type === 'invalid_target');
+  const hasDirectionalWarnings = flowInsights.warnings.some((warning) => warning.type === 'backward_route' || warning.type === 'possible_cycle');
+  const formatAuditEvent = (eventType: string) => {
+    if (eventType === 'form_created') return 'Created form';
+    if (eventType === 'form_updated') return 'Updated form content/settings';
+    if (eventType === 'form_deleted') return 'Deleted form';
+    if (eventType === 'collaborator_added') return 'Added collaborator';
+    if (eventType === 'collaborator_removed') return 'Removed collaborator';
+    if (eventType === 'collaborator_role_changed') return 'Changed collaborator role';
+    return eventType.replace(/_/g, ' ');
+  };
 
   return (
-    <div className="bg-natural-bg min-h-screen pb-24" style={{ backgroundColor: currentForm.theme?.backgroundColor || undefined }}>
+    <div className="bg-natural-bg min-h-screen pb-24 grid-ambient" style={{ backgroundColor: currentForm.theme?.backgroundColor || undefined }}>
       <Tabs defaultValue="questions" className="w-full">
-        <header className="bg-white border-b border-natural-border sticky top-16 z-40 transition-shadow">
+        <header className="bg-white/90 backdrop-blur-xl border-b border-natural-border sticky top-16 z-40 transition-shadow">
           <div className="container mx-auto px-6 h-16 flex items-center justify-between">
             <div className="flex items-center gap-4">
               <Button variant="ghost" size="icon" onClick={onBack} className="rounded-full hover:bg-natural-accent text-natural-muted">
@@ -453,7 +1022,6 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
             </TabsList>
 
             <div className="flex items-center gap-3">
-              <DarkModeToggle />
               <SaveStatus autoSaving={autoSaving} lastSavedAt={lastSavedAt} />
               
               <div className="hidden lg:flex items-center gap-1 border-r border-natural-border pr-3 mr-1">
@@ -469,8 +1037,8 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                 <Eye className="mr-2 h-4 w-4" />
                 Preview
               </Button>
-              <Button size="sm" onClick={saveForm} disabled={saving || autoSaving} className="btn-natural px-6 py-1.5 h-auto text-sm" style={{ backgroundColor: currentForm.theme?.accentColor || undefined }}>
-                {saving ? 'Force Saving...' : 'Save Now'}
+              <Button size="sm" onClick={saveForm} disabled={saving || autoSaving || !canEditForm} className="btn-natural px-6 py-1.5 h-auto text-sm" style={{ backgroundColor: currentForm.theme?.accentColor || undefined }}>
+                {!canEditForm ? 'Read only' : saving ? 'Force Saving...' : 'Save Now'}
               </Button>
               
               <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
@@ -571,6 +1139,14 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           </div>
         </header>
 
+        {accessRole === 'viewer' && (
+          <div className="mx-auto max-w-[920px] px-6 pt-6">
+            <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              You are in viewer mode. Changes are local only and cannot be saved to the server.
+            </div>
+          </div>
+        )}
+
         <TabsContent value="questions" className="mt-0 outline-none relative">
           
           {currentForm.settings?.showProgressBar && (
@@ -590,13 +1166,20 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
             </div>
           )}
 
-          <div className="max-w-[720px] mx-auto py-12 px-6 space-y-8">
+          <div className="max-w-[760px] mx-auto py-12 px-6 space-y-8">
             {currentForm.theme?.headerImage && (
-              <div className="w-full h-48 rounded-[32px] overflow-hidden shadow-sm">
-                <img src={currentForm.theme.headerImage} className="w-full h-full object-cover" alt="Form header" />
+              <div className="w-full rounded-[32px] overflow-hidden shadow-sm border border-natural-border bg-natural-bg/60 p-2">
+                <div className="w-full aspect-[16/5] rounded-[24px] overflow-hidden bg-natural-accent/70 flex items-center justify-center">
+                  <img
+                    src={currentForm.theme.headerImage}
+                    className={`w-full h-full ${headerImageFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+                    style={{ objectPosition: headerImageObjectPosition }}
+                    alt="Form header"
+                  />
+                </div>
               </div>
             )}
-            <div className="w-full bg-white rounded-[32px] shadow-[0_10px_30px_rgba(0,0,0,0.03)] border-t-[8px] border-natural-primary p-12 relative" style={{ borderTopColor: currentForm.theme?.accentColor || undefined }}>
+            <div className="w-full surface-glass border-t-[8px] border-natural-primary p-12 relative" style={{ borderTopColor: currentForm.theme?.accentColor || undefined }}>
               {currentForm.theme?.logo && (
                 <div className="mb-6 w-24 h-24">
                   <img src={currentForm.theme.logo} alt="Form Logo" className="w-full h-full object-contain" />
@@ -615,17 +1198,121 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                 aria-label="Form Description"
                 value={currentForm.description} 
                 onChange={(e) => updateForm({ description: e.target.value })}
+                onInput={(e) => {
+                  const target = e.currentTarget;
+                  target.style.height = 'auto';
+                  target.style.height = `${target.scrollHeight}px`;
+                }}
                 placeholder="Form description"
-                rows={2}
-                className="w-full mt-6 text-base text-natural-muted bg-transparent focus:outline-none resize-none leading-relaxed"
+                rows={3}
+                className="w-full mt-6 text-base text-natural-muted bg-transparent focus:outline-none resize-none leading-relaxed overflow-hidden min-h-[84px]"
                 style={{ fontFamily: currentForm.theme?.bodyFont || 'var(--font-sans)' }}
               />
             </div>
 
+            <Card className="surface-glass interactive-lift rounded-[28px]">
+              <CardContent className="p-6 space-y-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-natural-primary font-semibold">
+                    <Route className="h-4 w-4" />
+                    Mini Flow Map
+                  </div>
+                  <span className="text-xs text-natural-muted">
+                    {flowInsights.sections.length} section{flowInsights.sections.length === 1 ? '' : 's'} · {flowInsights.warnings.length} warning{flowInsights.warnings.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+
+                {flowInsights.warnings.length > 0 && (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 space-y-1">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <AlertTriangle className="h-4 w-4" />
+                      Branch safety warnings
+                    </div>
+                    {flowInsights.warnings.slice(0, 4).map((warning, index) => (
+                      <p key={`${warning.type}-${index}`} className="text-xs leading-relaxed">{warning.message}</p>
+                    ))}
+                    {flowInsights.warnings.length > 4 && (
+                      <p className="text-xs font-medium">+{flowInsights.warnings.length - 4} more warnings in question cards below.</p>
+                    )}
+                    {(hasInvalidTargetWarnings || hasDirectionalWarnings) && (
+                      <div className="flex flex-wrap gap-2 pt-2">
+                        {hasInvalidTargetWarnings && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={removeInvalidRouteTargets}
+                            className="h-8 rounded-full border-amber-400 text-amber-900 hover:bg-amber-100"
+                          >
+                            Fix invalid targets
+                          </Button>
+                        )}
+                        {hasDirectionalWarnings && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={normalizeBackwardRoutes}
+                            className="h-8 rounded-full border-amber-400 text-amber-900 hover:bg-amber-100"
+                          >
+                            Fix backward/loop routes
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  {flowInsights.sections.map((section, index) => (
+                    <div
+                      key={section.id}
+                      className={`rounded-2xl border px-4 py-3 ${
+                        flowInsights.unreachableSectionIds.has(section.id)
+                          ? 'border-amber-300 bg-amber-50/70'
+                          : 'border-natural-border bg-natural-bg/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-natural-text">
+                          {index + 1}. {section.title}
+                        </p>
+                        <span className="text-[11px] uppercase tracking-widest text-natural-muted">
+                          {section.questions.length} question{section.questions.length === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {(flowInsights.edgesBySection[section.id] || []).map((edge, edgeIndex) => {
+                          const targetLabel = edge.targetId === '__submit__'
+                            ? 'Submit'
+                            : (flowInsights.sections.find((candidate) => candidate.id === edge.targetId)?.title || 'Missing section');
+                          return (
+                            <span
+                              key={`${section.id}-${edge.targetId}-${edgeIndex}`}
+                              className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] ${
+                                edge.type === 'branch'
+                                  ? 'border-natural-primary/40 bg-natural-primary/10 text-natural-primary'
+                                  : 'border-natural-border bg-white text-natural-muted'
+                              }`}
+                              title={`${edge.label} → ${targetLabel}`}
+                            >
+                              {edge.type === 'branch' ? 'Branch' : 'Next'}: {targetLabel}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
             <DndContext 
               sensors={sensors}
               collisionDetection={closestCenter}
+              onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
             >
               <SortableContext 
                 items={currentForm.questions.map(q => q.id)}
@@ -642,6 +1329,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                     accentColor={currentForm.theme?.accentColor}
                     titleFont={currentForm.theme?.titleFont}
                     bodyFont={currentForm.theme?.bodyFont}
+                    isActiveDrag={activeDragQuestionId === question.id}
                   />
                 ))}
               />
@@ -668,7 +1356,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
         
         <TabsContent value="theme" className="mt-0 outline-none">
           <div className="max-w-[720px] mx-auto py-12 px-6">
-            <div className="w-full bg-white rounded-[32px] shadow-[0_10px_30px_rgba(0,0,0,0.03)] p-12 border border-natural-border">
+            <div className="w-full surface-glass p-12">
               <h2 className="text-2xl font-serif mb-8 text-natural-text">Theme Settings</h2>
               
               <div className="space-y-8">
@@ -706,6 +1394,14 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
 
                 <div className="space-y-4">
                   <Label className="text-sm font-bold text-natural-muted uppercase tracking-widest">Header Image</Label>
+                  <div className="rounded-xl border border-natural-border bg-natural-bg/60 px-4 py-3">
+                    <p className="text-xs font-semibold text-natural-text">
+                      Recommended size: <span className="font-mono">1920 × 600 px</span> (ratio ~3.2:1)
+                    </p>
+                    <p className="text-[11px] text-natural-muted mt-1">
+                      Minimum: 1200 × 375 px. Use JPG/WebP under 2MB for faster loading and sharper banner display.
+                    </p>
+                  </div>
                   <div className="relative">
                     <input 
                       aria-label="Upload header image"
@@ -721,9 +1417,43 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                       </div>
                     </div>
                   </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs font-semibold text-natural-muted uppercase tracking-wider">Display mode</Label>
+                      <select
+                        value={headerImageFit}
+                        onChange={(e) => updateForm({ theme: { ...currentForm.theme, headerImageFit: e.target.value as 'contain' | 'cover' } })}
+                        className="w-full h-10 rounded-xl border border-natural-border bg-white px-3 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/20"
+                      >
+                        <option value="contain">Show full image (recommended)</option>
+                        <option value="cover">Fill banner (crop if needed)</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs font-semibold text-natural-muted uppercase tracking-wider">Focus position</Label>
+                      <select
+                        value={headerImagePosition}
+                        onChange={(e) => updateForm({ theme: { ...currentForm.theme, headerImagePosition: e.target.value as 'center' | 'top' | 'bottom' | 'left' | 'right' } })}
+                        className="w-full h-10 rounded-xl border border-natural-border bg-white px-3 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/20"
+                      >
+                        <option value="center">Center</option>
+                        <option value="top">Top</option>
+                        <option value="bottom">Bottom</option>
+                        <option value="left">Left</option>
+                        <option value="right">Right</option>
+                      </select>
+                    </div>
+                  </div>
                   {currentForm.theme?.headerImage && (
-                    <div className="mt-4 h-32 rounded-xl overflow-hidden border border-natural-border w-full relative group">
-                      <img src={currentForm.theme.headerImage} alt="Preview" className="w-full h-full object-cover" />
+                    <div className="mt-4 rounded-xl overflow-hidden border border-natural-border w-full relative group bg-natural-bg/70 p-2">
+                      <div className="w-full aspect-[16/5] rounded-lg overflow-hidden bg-natural-accent/70 flex items-center justify-center">
+                        <img
+                          src={currentForm.theme.headerImage}
+                          alt="Preview"
+                          className={`w-full h-full ${headerImageFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+                          style={{ objectPosition: headerImageObjectPosition }}
+                        />
+                      </div>
                       <button 
                         type="button"
                         aria-label="Remove header image"
@@ -763,7 +1493,13 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                 <div className="space-y-4">
                   <Label className="text-sm font-bold text-natural-muted uppercase tracking-widest">Background Color</Label>
                   <div className="flex flex-wrap gap-4">
-                    {['#FAF9F6', '#F5F5F5', '#f0fdf4', '#f0f9ff', '#f5f3ff', '#fff1f2', '#fff7ed', '#fefce8'].map((color) => (
+                    {[
+                      '#FAF9F6', '#FFFFFF', '#F5F5F5', '#F1F3F5',
+                      '#FEFCE8', '#FFF7ED', '#FFF1F2', '#FDF2F8',
+                      '#F5F3FF', '#EEF2FF', '#E0F2FE', '#F0F9FF',
+                      '#ECFEFF', '#F0FDFA', '#ECFDF5', '#F0FDF4',
+                      '#FFF8F1', '#F8FAFC', '#F1F5F9', '#E2E8F0',
+                    ].map((color) => (
                       <button
                         key={color}
                         onClick={() => updateForm({ theme: { ...currentForm.theme, backgroundColor: color } })}
@@ -814,7 +1550,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
         
         <TabsContent value="settings" className="mt-0 outline-none">
           <div className="max-w-[720px] mx-auto py-12 px-6">
-            <div className="w-full bg-white rounded-[32px] shadow-[0_10px_30px_rgba(0,0,0,0.03)] p-12 border border-natural-border">
+            <div className="w-full surface-glass p-12">
               <h2 className="text-2xl font-serif mb-8 text-natural-text">Form Settings</h2>
               
               <div className="space-y-8">
@@ -961,6 +1697,27 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                   />
                 </div>
 
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label className="text-base font-medium text-natural-text flex items-center gap-2">
+                      Enforce forward-only routes
+                      <Tooltip>
+                        <TooltipTrigger type="button" className="cursor-help">
+                          <Info className="h-4 w-4 text-natural-muted hover:text-natural-primary transition-colors" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>When enabled, branching can only jump to later sections. Backward/loop routes are blocked in both editor and database layer.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </Label>
+                    <p className="text-sm text-natural-muted">Optional strict mode for branch integrity and loop prevention.</p>
+                  </div>
+                  <Switch
+                    checked={currentForm.settings?.enforceForwardRoutes || false}
+                    onCheckedChange={(checked) => updateForm({ settings: { ...currentForm.settings, enforceForwardRoutes: checked } })}
+                  />
+                </div>
+
                 <div className="flex items-start justify-between">
                   <div className="space-y-1 pr-6 flex-1">
                     <Label className="text-base font-medium text-natural-text flex items-center gap-2">
@@ -1090,6 +1847,139 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                     </div>
                   )}
                 </div>
+
+                <div className="border-t border-natural-border pt-8 space-y-6">
+                  <div className="flex items-center gap-2 text-natural-text">
+                    <Shield className="h-4 w-4" />
+                    <h3 className="text-base font-semibold">Collaboration Roles</h3>
+                  </div>
+
+                  <p className="text-sm text-natural-muted">
+                    Owner can manage settings and collaborators. Editor can modify form content. Viewer can view only.
+                  </p>
+
+                  {canManageCollaborators && (
+                    <div className="rounded-2xl border border-natural-border bg-natural-bg/50 p-4 space-y-3">
+                      <Label className="text-sm font-medium text-natural-text">Invite collaborator by account email</Label>
+                      <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_auto] gap-3">
+                        <Input
+                          placeholder="colleague@company.com"
+                          value={inviteEmail}
+                          onChange={(e) => setInviteEmail(e.target.value)}
+                          className="bg-white border-natural-border"
+                        />
+                        <select
+                          className="h-10 rounded-xl border border-natural-border bg-white px-3 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/20"
+                          value={inviteRole}
+                          onChange={(e) => setInviteRole(e.target.value as Exclude<CollaboratorRole, 'owner'>)}
+                        >
+                          <option value="editor">Editor</option>
+                          <option value="viewer">Viewer</option>
+                        </select>
+                        <Button
+                          type="button"
+                          onClick={inviteCollaborator}
+                          disabled={inviting || !inviteEmail.trim()}
+                          className="btn-natural"
+                          style={{ backgroundColor: currentForm.theme?.accentColor || undefined }}
+                        >
+                          <UserPlus className="h-4 w-4 mr-2" />
+                          {inviting ? 'Adding...' : 'Add'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    {collaborationLoading ? (
+                      <p className="text-sm text-natural-muted">Loading collaborators...</p>
+                    ) : collaborators.length === 0 ? (
+                      <p className="text-sm text-natural-muted">No collaborators yet.</p>
+                    ) : (
+                      collaborators.map((collaborator) => (
+                        <div key={collaborator.userId} className="rounded-2xl border border-natural-border bg-natural-bg/40 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 rounded-full border border-natural-border bg-white overflow-hidden flex items-center justify-center shrink-0">
+                              {collaborator.avatarUrl ? (
+                                <img src={collaborator.avatarUrl} alt="" className="w-full h-full object-cover" />
+                              ) : (
+                                <UserRound className="h-4 w-4 text-natural-muted" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-natural-text truncate">
+                                {collaborator.displayName || collaborator.userId}
+                              </p>
+                              <p className="text-xs text-natural-muted truncate">{collaborator.userId}</p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {collaborator.role === 'owner' ? (
+                              <span className="px-3 py-1 rounded-full border border-natural-border bg-white text-xs font-semibold text-natural-primary">Owner</span>
+                            ) : canManageCollaborators ? (
+                              <>
+                                <select
+                                  className="h-9 rounded-xl border border-natural-border bg-white px-3 text-xs text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/20"
+                                  value={collaborator.role}
+                                  onChange={(e) => changeCollaboratorRole(collaborator.userId, e.target.value as Exclude<CollaboratorRole, 'owner'>)}
+                                >
+                                  <option value="editor">Editor</option>
+                                  <option value="viewer">Viewer</option>
+                                </select>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => revokeCollaborator(collaborator.userId)}
+                                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  Remove
+                                </Button>
+                              </>
+                            ) : (
+                              <span className="px-3 py-1 rounded-full border border-natural-border bg-white text-xs font-semibold text-natural-primary capitalize">
+                                {collaborator.role}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="border-t border-natural-border pt-8 space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-natural-text">
+                      <History className="h-4 w-4" />
+                      <h3 className="text-base font-semibold">Audit Timeline</h3>
+                    </div>
+                    <Button type="button" variant="ghost" size="sm" onClick={loadAuditEvents} className="text-natural-muted hover:text-natural-primary">
+                      Refresh
+                    </Button>
+                  </div>
+
+                  {auditLoading ? (
+                    <p className="text-sm text-natural-muted">Loading timeline...</p>
+                  ) : auditEvents.length === 0 ? (
+                    <p className="text-sm text-natural-muted">No audit events yet.</p>
+                  ) : (
+                    <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+                      {auditEvents.map((event) => (
+                        <div key={event.id} className="rounded-2xl border border-natural-border bg-natural-bg/40 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-medium text-natural-text">{formatAuditEvent(event.eventType)}</p>
+                            <p className="text-xs text-natural-muted">{new Date(event.createdAt).toLocaleString()}</p>
+                          </div>
+                          <p className="text-xs text-natural-muted mt-1">
+                            by {event.actorDisplayName || event.actorUserId || 'system'}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1099,13 +1989,14 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   );
 };
 
-const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, removeQuestion, duplicateQuestion, accentColor, titleFont, bodyFont }: any) => {
+const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, removeQuestion, duplicateQuestion, accentColor, titleFont, bodyFont, isActiveDrag }: any) => {
   const {
     attributes,
     listeners,
     setNodeRef,
     transform,
     transition,
+    isDragging,
   } = useSortable({ id: question.id });
 
   const style = {
@@ -1235,7 +2126,8 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
   const removeOption = (index: number) => {
     const options = question.options.filter((_: any, i: number) => i !== index);
     const optionImages = question.optionImages ? question.optionImages.filter((_: any, i: number) => i !== index) : undefined;
-    updateQuestion(question.id, { options, optionImages });
+    const optionBranchToSectionIds = question.optionBranchToSectionIds ? question.optionBranchToSectionIds.filter((_: any, i: number) => i !== index) : undefined;
+    updateQuestion(question.id, { options, optionImages, optionBranchToSectionIds });
   };
 
   const updateOption = (index: number, value: string) => {
@@ -1261,34 +2153,98 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
     updateQuestion(question.id, { optionImages });
   };
 
+  const updateOptionBranchTarget = (index: number, sectionId: string) => {
+    const optionBranchToSectionIds = [...(question.optionBranchToSectionIds || [])];
+    while (optionBranchToSectionIds.length < (question.options?.length || 0)) {
+      optionBranchToSectionIds.push('');
+    }
+    optionBranchToSectionIds[index] = sectionId;
+    updateQuestion(question.id, { optionBranchToSectionIds });
+  };
+
+  const isSectionQuestion = question.type === 'section';
+  const sectionTargets = (allQuestions || [])
+    .filter((candidate: any) => candidate.type === 'section' && candidate.id !== question.id)
+    .map((candidate: any) => ({ id: candidate.id, title: candidate.title || 'Untitled section' }));
+  const validSectionTargetIds = new Set(sectionTargets.map((section: { id: string }) => section.id));
+  const directTargetWarning = question.branchToSectionId
+    && question.branchToSectionId !== '__submit__'
+    && !validSectionTargetIds.has(question.branchToSectionId)
+      ? 'Selected section no longer exists. Choose another target.'
+      : '';
+  const hasPartialOptionRouting = Boolean(question.optionBranchToSectionIds?.some((target: string) => Boolean(target)));
+
   const questionIndex = allQuestions?.findIndex((q: any) => q.id === question.id) ?? -1;
   const previousQuestions = questionIndex > 0 ? allQuestions.slice(0, questionIndex) : [];
 
   return (
-    <div ref={setNodeRef} style={style} className="group relative">
-      <div className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-10 border border-natural-border relative ring-2 ring-transparent transition-all" style={{ '--tw-ring-color': accentColor ? `${accentColor}1a` : undefined } as any}>
+    <motion.div
+      ref={setNodeRef}
+      style={style}
+      className="group relative"
+      whileHover={isDragging ? undefined : { y: -4 }}
+      animate={isDragging ? { scale: 1.01, rotate: -0.15 } : { scale: 1, rotate: 0 }}
+      transition={{ type: 'spring', stiffness: 360, damping: 26, mass: 0.8 }}
+    >
+      <div
+        className={`w-full rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-10 border relative ring-2 transition-all ${
+          isDragging
+            ? 'ring-natural-primary/40 shadow-[0_22px_40px_rgba(0,0,0,0.3)] dark:shadow-[0_22px_40px_rgba(255,255,255,0.08)]'
+            : 'ring-transparent interactive-lift'
+        } ${isSectionQuestion ? 'bg-natural-accent/40 border-natural-primary/20' : 'bg-white border-natural-border'}`}
+        style={{ '--tw-ring-color': accentColor ? `${accentColor}1a` : undefined } as any}
+      >
         <div 
           {...attributes} 
           {...listeners} 
           className="absolute left-1/2 -top-3 -translate-x-1/2 px-3 py-1 bg-natural-accent rounded-full text-[9px] uppercase tracking-widest font-bold text-natural-muted border border-natural-border cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
         >
-          Drag to Reorder
+          {isDragging ? 'Dragging...' : 'Drag to Reorder'}
         </div>
+        {isActiveDrag && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.92 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+            className="absolute -right-2 -top-2 rounded-full border border-natural-primary/30 bg-natural-primary text-white px-3 py-1 text-[10px] font-bold uppercase tracking-wider animate-soft-pulse"
+          >
+            Moving
+          </motion.div>
+        )}
         
         <div className="space-y-6">
+          {isSectionQuestion && (
+            <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.28em] font-bold text-natural-primary">
+              <SeparatorHorizontal className="h-4 w-4" />
+              Section block
+              <span className="text-natural-muted normal-case tracking-normal font-medium">Everything below belongs to this part of the form.</span>
+            </div>
+          )}
           <div className="flex flex-col md:flex-row gap-6 items-start">
-            <div className="relative flex-1 w-full">
-              <input 
-                aria-label="Question Title"
-                value={question.title}
-                onChange={(e) => updateQuestion(question.id, { title: e.target.value })}
-                placeholder="Question"
-                className="w-full text-xl font-medium bg-natural-bg p-4 pr-8 rounded-2xl focus:outline-none border border-natural-border text-natural-text"
+            <div className="relative flex-1 w-full space-y-3">
+              <div className="relative">
+                <input 
+                  aria-label={isSectionQuestion ? 'Section Title' : 'Question Title'}
+                  value={question.title}
+                  onChange={(e) => updateQuestion(question.id, { title: e.target.value })}
+                  placeholder={isSectionQuestion ? 'Section title' : 'Question'}
+                  className="w-full text-xl font-medium bg-natural-bg p-4 pr-8 rounded-2xl focus:outline-none border border-natural-border text-natural-text"
+                  style={{ fontFamily: bodyFont || 'var(--font-sans)' }}
+                />
+                {question.required && !isSectionQuestion && (
+                  <span className="absolute right-4 top-4 text-destructive text-xl font-medium">*</span>
+                )}
+              </div>
+              <textarea 
+                aria-label={isSectionQuestion ? 'Section Description' : 'Question Description'}
+                value={question.description || ''}
+                onChange={(e) => updateQuestion(question.id, { description: e.target.value })}
+                placeholder={isSectionQuestion ? 'Section description' : 'Description (optional)'}
+                rows={isSectionQuestion ? 3 : 2}
+                className="w-full rounded-2xl border border-natural-border bg-natural-bg px-4 py-3 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/10 resize-none"
                 style={{ fontFamily: bodyFont || 'var(--font-sans)' }}
               />
-              {question.required && (
-                <span className="absolute right-4 top-4 text-destructive text-xl font-medium">*</span>
-              )}
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger className="flex items-center gap-3 px-6 py-4 bg-white border border-natural-border rounded-2xl text-xs font-semibold text-natural-primary hover:bg-natural-accent transition-colors w-full md:w-auto min-w-[200px] justify-between cursor-pointer">
@@ -1311,6 +2267,51 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
+
+          {question.image && (
+            <div className="space-y-3">
+              <div className="overflow-hidden rounded-2xl border border-natural-border bg-natural-bg">
+                <img src={question.image} alt={question.title || 'Question image'} className="h-56 w-full object-cover" />
+              </div>
+              <button type="button" onClick={() => updateQuestion(question.id, { image: undefined })} className="text-sm font-medium text-destructive hover:underline">
+                Remove question image
+              </button>
+            </div>
+          )}
+
+          {!isSectionQuestion && (
+            <div className="relative">
+              <input
+                aria-label="Upload question image"
+                type="file"
+                accept="image/*"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+
+                  if (file.size > 2 * 1024 * 1024) {
+                    toast.error('Image size must be less than 2MB');
+                    return;
+                  }
+
+                  try {
+                    const imageUrl = await uploadImageAsset(file, { formId });
+                    updateQuestion(question.id, { image: imageUrl });
+                  } catch (error) {
+                    console.error('Question image upload failed:', error);
+                    toast.error('Failed to upload question image');
+                  }
+                }}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+              />
+              <div className="w-full h-16 border-2 border-dashed border-natural-border rounded-xl flex items-center justify-center text-natural-muted bg-natural-bg/50 hover:bg-natural-bg transition-colors">
+                <div className="flex items-center gap-2">
+                  <ImageIcon className="h-5 w-5" />
+                  <span className="text-sm font-medium">Click or drag question image to upload (max 2MB)</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Options for choices */}
           {(question.type === 'multiple_choice' || question.type === 'checkbox' || question.type === 'dropdown') && (
@@ -1357,6 +2358,37 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                         >
                           <ImageIcon className="h-4 w-4" />
                         </button>
+                      </div>
+                    )}
+                    {(question.type === 'multiple_choice' || question.type === 'dropdown') && (
+                      <div className="flex flex-col gap-1 min-w-[220px]">
+                        <select
+                          aria-label={`Route option ${index + 1} to section`}
+                          value={question.optionBranchToSectionIds?.[index] || ''}
+                          onChange={(e) => updateOptionBranchTarget(index, e.target.value)}
+                          className="h-10 rounded-xl border border-natural-border bg-natural-bg px-3 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/10"
+                        >
+                          <option value="">Continue to next section</option>
+                          <option value="__submit__">Submit form</option>
+                          {sectionTargets.map((section) => (
+                            <option key={section.id} value={section.id}>{section.title}</option>
+                          ))}
+                        </select>
+                        {(() => {
+                          const optionTarget = question.optionBranchToSectionIds?.[index] || '';
+                          const optionTargetMissing = !optionTarget && hasPartialOptionRouting;
+                          const optionTargetInvalid = Boolean(optionTarget) && optionTarget !== '__submit__' && !validSectionTargetIds.has(optionTarget);
+
+                          if (!optionTargetMissing && !optionTargetInvalid) return null;
+
+                          return (
+                            <p className="text-[11px] font-medium text-amber-700">
+                              {optionTargetInvalid
+                                ? 'Target section not found.'
+                                : 'Empty route target while other options have routing.'}
+                            </p>
+                          );
+                        })()}
                       </div>
                     )}
                     <button 
@@ -1451,7 +2483,7 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                     placeholder="Email address"
                     value={previewValue}
                     onChange={handlePreviewChange}
-                    className={`w-full h-12 bg-natural-bg rounded-xl border flex items-center px-4 pr-10 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/10 ${previewError ? 'border-destructive focus-visible:ring-destructive/20' : previewValue ? 'border-green-500 focus-visible:ring-green-500/20' : 'border-natural-border'}`} 
+                    className={`w-full h-12 bg-natural-bg rounded-xl border flex items-center px-4 pr-10 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/10 ${previewError ? 'border-destructive focus-visible:ring-destructive/20' : previewValue ? 'border-natural-primary focus-visible:ring-natural-primary/20' : 'border-natural-border'}`} 
                   />
                   {previewValue && !previewError && (
                     <div className="absolute right-3 top-1/2 -translate-y-1/2 text-green-500">
@@ -1537,8 +2569,15 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
             </div>
           )}
 
-          {showSettings && (
-            <div className="mt-6 p-6 rounded-2xl bg-natural-accent/30 border border-natural-border space-y-8 animate-in fade-in slide-in-from-top-2">
+          <AnimatePresence initial={false}>
+            {showSettings && !isSectionQuestion && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                className="mt-6 p-6 rounded-2xl bg-natural-accent/30 border border-natural-border space-y-8"
+              >
               {['number', 'date', 'time', 'short_answer', 'paragraph', 'email', 'checkbox'].includes(question.type) && (
                 <div className="space-y-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-natural-primary">
@@ -1811,6 +2850,30 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                 </div>
               )}
 
+              <div className="space-y-3 border-t border-natural-border pt-6">
+                <div className="flex items-center gap-2 text-sm font-semibold text-natural-primary">
+                  <SeparatorHorizontal className="h-4 w-4" />
+                  Section routing
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-natural-muted">Go to section after this question</label>
+                  <select
+                    className="w-full h-10 rounded-lg border border-natural-border bg-white px-3 text-sm text-natural-text focus:outline-none focus:ring-2 focus:ring-natural-primary/20"
+                    value={question.branchToSectionId || ''}
+                    onChange={(e) => updateQuestion(question.id, { branchToSectionId: e.target.value || undefined })}
+                  >
+                    <option value="">Continue to next section</option>
+                    <option value="__submit__">Submit form</option>
+                    {sectionTargets.map((section) => (
+                      <option key={section.id} value={section.id}>{section.title}</option>
+                    ))}
+                  </select>
+                  {directTargetWarning && (
+                    <p className="text-xs font-medium text-amber-700">{directTargetWarning}</p>
+                  )}
+                </div>
+              </div>
+
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-sm font-semibold text-natural-primary">
@@ -1938,8 +3001,9 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                   </div>
                 )}
               </div>
-            </div>
-          )}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           <div className="mt-8 pt-8 border-t border-natural-accent flex items-center justify-end gap-6 text-natural-muted relative">
             <div className="absolute left-0">
@@ -1978,6 +3042,6 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
           </div>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 };

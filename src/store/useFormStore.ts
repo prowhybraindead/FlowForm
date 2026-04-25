@@ -19,6 +19,7 @@ interface FormState {
 }
 
 const DEFAULT_QUESTION_TITLE = 'Untitled Question';
+const DEFAULT_SECTION_TITLE = 'Section title';
 
 const saveHistory = (state: FormState, newForm: Form): Partial<FormState> => {
   if (!state.currentForm) return { currentForm: newForm };
@@ -56,8 +57,9 @@ export const useFormStore = create<FormState>((set) => ({
       const newQuestion: Question = {
         id: crypto.randomUUID(),
         type,
-        title: DEFAULT_QUESTION_TITLE,
+        title: type === 'section' ? DEFAULT_SECTION_TITLE : DEFAULT_QUESTION_TITLE,
         required: false,
+        description: type === 'section' ? 'Section description' : undefined,
         options: (type === 'multiple_choice' || type === 'checkbox' || type === 'dropdown') ? ['Option 1'] : undefined,
       };
       const newForm = {

@@ -2,6 +2,41 @@ import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
+export async function GET(request: Request) {
+  const baseUrl = process.env.TEMP_STORAGE_SERVER_URL?.trim();
+  const token = process.env.TEMP_STORAGE_SERVER_TOKEN?.trim();
+
+  if (!baseUrl) {
+    return NextResponse.json({ ok: true, skipped: 'TEMP_STORAGE_SERVER_URL not configured' });
+  }
+
+  const url = new URL(request.url);
+  const formId = url.searchParams.get('formId')?.trim() || '';
+
+  if (!formId) {
+    return NextResponse.json({ error: 'Missing formId' }, { status: 400 });
+  }
+
+  const endpoint = `${baseUrl.replace(/\/$/, '')}/forms/${encodeURIComponent(formId)}/status`;
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  try {
+    const upstreamResponse = await fetch(endpoint, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
+    const upstreamPayload = await upstreamResponse.json().catch(() => ({}));
+    return NextResponse.json(upstreamPayload, { status: upstreamResponse.status });
+  } catch (error) {
+    console.error('Temp storage form status fetch failed:', error);
+    return NextResponse.json({ error: 'Temp storage form status fetch failed.' }, { status: 502 });
+  }
+}
+
 export async function POST(request: Request) {
   const baseUrl = process.env.TEMP_STORAGE_SERVER_URL?.trim();
   const token = process.env.TEMP_STORAGE_SERVER_TOKEN?.trim();

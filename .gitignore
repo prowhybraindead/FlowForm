@@ -11,3 +11,4 @@ tsconfig.tsbuildinfo
 server/data/
 .env*
 !.env.example
+AI.md

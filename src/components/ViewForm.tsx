@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { Form, Response, UserProfile } from '../types';
 import { createResponseRecord, getFormRecord, incrementFormViews } from '../lib/formsApi';
 import { getUserProfile } from '../lib/profilesApi';
 import { uploadImageAsset } from '../lib/imageUpload';
+import { isFormClosedBySettings } from '../lib/formStatus';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -12,11 +13,9 @@ import { Label } from './ui/label';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Checkbox } from './ui/checkbox';
 import { toast } from 'sonner';
-import { CheckCircle2, UploadCloud } from 'lucide-react';
-import { motion } from 'motion/react';
+import { Check, CheckCircle2, UploadCloud } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
-import { DarkModeToggle } from './DarkModeToggle';
-import { useDarkMode } from '../hooks/useDarkMode';
 
 interface ViewFormProps {
   formId: string;
@@ -36,7 +35,6 @@ function requiresRespondentEmail(form: Form | null) {
 }
 
 export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false }) => {
-  const { isDark } = useDarkMode();
   const [form, setForm] = useState<Form | null>(null);
   const [answers, setAnswers] = useState<{ [key: string]: any }>({});
   const [otherText, setOtherText] = useState<{ [key: string]: string }>({});
@@ -48,6 +46,8 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showConfirmSubmit, setShowConfirmSubmit] = useState(false);
+  const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
+  const [tempStorageClosed, setTempStorageClosed] = useState(false);
   const startTime = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -56,6 +56,22 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         const fetchedForm = await getFormRecord(formId);
         if (fetchedForm) {
           setForm(fetchedForm);
+          setCurrentSectionIndex(0);
+          setTempStorageClosed(false);
+
+          if (process.env.NEXT_PUBLIC_ENABLE_TEMP_STORAGE_UPLOADS === 'true') {
+            fetch(`/api/temp-storage/form-status?formId=${encodeURIComponent(formId)}`, { cache: 'no-store' })
+              .then((response) => response.json())
+              .then((payload) => {
+                if (payload && typeof payload.is_closed === 'boolean') {
+                  setTempStorageClosed(Boolean(payload.is_closed));
+                }
+              })
+              .catch((error) => {
+                console.error('Error fetching temp storage form status:', error);
+              });
+          }
+
           if (fetchedForm.settings?.showOwnerProfile) {
             try {
               setOwnerProfile(await getUserProfile(fetchedForm.creatorId));
@@ -93,7 +109,11 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     }
 
     // Basic validation for required fields
-    const missing = form?.questions?.filter(q => isQuestionVisible(q) && q.required && !answers[q.id]);
+    const questionsToValidate = useSectionFlow && activeSection
+      ? activeSection.questions.filter(q => isQuestionVisible(q))
+      : form?.questions?.filter(q => isQuestionVisible(q));
+
+    const missing = questionsToValidate?.filter(q => q.required && !answers[q.id]);
     if (missing && missing.length > 0) {
       toast.error(`Please answer required questions: ${missing.map(m => m.title).join(', ')}`);
       return;
@@ -156,6 +176,21 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     }
     
     setSubmitting(false);
+
+    if (useSectionFlow) {
+      const nextSectionIndex = resolveNextSectionIndex();
+      if (nextSectionIndex === '__submit__') {
+        setShowConfirmSubmit(true);
+        return;
+      }
+
+      if (nextSectionIndex !== null) {
+        setCurrentSectionIndex(nextSectionIndex);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+    }
+
     setShowConfirmSubmit(true);
   };
 
@@ -330,6 +365,94 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     }
   };
 
+  const formSections = useMemo(() => {
+    if (!form) return [];
+
+    const sections: Array<{ id: string; title: string; description?: string; questions: any[]; isDefault: boolean }> = [];
+    let currentSection = {
+      id: '__default__',
+      title: form.title,
+      description: form.description,
+      questions: [] as any[],
+      isDefault: true,
+    };
+    let sawSectionMarker = false;
+
+    form.questions.forEach((question) => {
+      if (question.type === 'section') {
+        if (currentSection.questions.length > 0) {
+          sections.push(currentSection);
+        }
+
+        currentSection = {
+          id: question.id,
+          title: question.title || 'Untitled section',
+          description: question.description,
+          questions: [],
+          isDefault: false,
+        };
+        sections.push(currentSection);
+        sawSectionMarker = true;
+        return;
+      }
+
+      currentSection.questions.push(question);
+    });
+
+    if (!sawSectionMarker && currentSection.questions.length > 0) {
+      sections.push(currentSection);
+    }
+
+    return sections;
+  }, [form]);
+
+  const useSectionFlow = formSections.some((section) => !section.isDefault);
+  const activeSection = useSectionFlow ? formSections[Math.min(currentSectionIndex, Math.max(formSections.length - 1, 0))] : null;
+
+  const resolveQuestionBranchTarget = (question: any) => {
+    const answerValue = answers[question.id];
+    const hasAnswer = Array.isArray(answerValue) ? answerValue.length > 0 : answerValue !== undefined && answerValue !== null && answerValue !== '';
+
+    if (!hasAnswer) {
+      return '';
+    }
+
+    if (question.type === 'multiple_choice' || question.type === 'dropdown') {
+      const optionIndex = question.options?.findIndex((option: string) => option === answerValue) ?? -1;
+      const optionTarget = optionIndex >= 0 ? question.optionBranchToSectionIds?.[optionIndex] : undefined;
+      if (optionTarget) return optionTarget;
+    }
+
+    return question.branchToSectionId || '';
+  };
+
+  const resolveNextSectionIndex = (): number | '__submit__' | null => {
+    if (!useSectionFlow || !activeSection) return null;
+
+    for (let idx = activeSection.questions.length - 1; idx >= 0; idx -= 1) {
+      const targetSectionId = resolveQuestionBranchTarget(activeSection.questions[idx]);
+      if (!targetSectionId) continue;
+
+      if (targetSectionId === '__submit__') {
+        return '__submit__';
+      }
+
+      const targetIndex = formSections.findIndex((section) => section.id === targetSectionId);
+      if (targetIndex > currentSectionIndex) {
+        return targetIndex;
+      }
+    }
+
+    const nextIndex = currentSectionIndex + 1;
+    return nextIndex < formSections.length ? nextIndex : null;
+  };
+
+  const goToPreviousSection = () => {
+    if (!useSectionFlow) return;
+    setCurrentSectionIndex((current) => Math.max(current - 1, 0));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   if (loading) return (
     <div className="flex h-screen items-center justify-center">
       <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
@@ -338,26 +461,23 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
 
   if (!form) return <div className="text-center py-20 text-muted-foreground">Form not found or unavailable.</div>;
 
+  const isExpired = Boolean(form.settings?.expirationDate && new Date() > new Date(form.settings.expirationDate));
+  const isClosedBySettings = isFormClosedBySettings(form.settings);
+
   if (!isPreview) {
-    if (form.settings?.publishImmediately === false) {
+    if (isClosedBySettings || tempStorageClosed) {
       return (
         <div className="max-w-2xl mx-auto py-20 px-4 text-center">
           <h2 className="text-2xl font-bold mb-2">Form is not available</h2>
-          <p className="text-natural-muted">This form is not currently accepting responses.</p>
+          <p className="text-natural-muted">
+            {isExpired
+              ? 'This form has expired and is no longer accepting responses.'
+              : tempStorageClosed && !isClosedBySettings
+                ? 'This form is temporarily closed by the upload backend and not accepting responses right now.'
+                : 'This form is not currently accepting responses.'}
+          </p>
         </div>
       );
-    }
-    
-    if (form.settings?.expirationDate) {
-      const expirationDate = new Date(form.settings.expirationDate);
-      if (new Date() > expirationDate) {
-        return (
-          <div className="max-w-2xl mx-auto py-20 px-4 text-center">
-            <h2 className="text-2xl font-bold mb-2">Form has expired</h2>
-            <p className="text-natural-muted">This form is no longer accepting responses.</p>
-          </div>
-        );
-      }
     }
   }
 
@@ -371,7 +491,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           style={{ fontFamily: form.theme?.bodyFont || 'var(--font-sans)' }}
         >
           <div className="flex justify-center">
-            <CheckCircle2 className="h-16 w-16 text-green-500" />
+            <CheckCircle2 className="h-16 w-16 text-natural-primary" />
           </div>
           <h2 className="text-2xl font-bold" style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}>{form.title}</h2>
           
@@ -392,6 +512,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
               setAnswers({});
               setRespondentEmail('');
               setRespondentEmailError('');
+              setCurrentSectionIndex(0);
             }}>
               Submit another response
             </Button>
@@ -424,7 +545,9 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     return action === 'show' ? isMatch : !isMatch;
   };
 
-  const visibleQuestions = form.questions.filter(isQuestionVisible);
+  const visibleQuestions = useSectionFlow && activeSection
+    ? activeSection.questions.filter(isQuestionVisible)
+    : form.questions.filter(isQuestionVisible);
   const showRespondentEmailField = requiresRespondentEmail(form);
   const showOwnerProfile = Boolean(form.settings?.showOwnerProfile && ownerProfile);
   const totalFields = visibleQuestions.length + (showRespondentEmailField ? 1 : 0);
@@ -434,13 +557,31 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     return !!answer;
   }).length;
   const respondentEmailAnswered = showRespondentEmailField && isValidEmailFormat(normalizeRespondentEmail(respondentEmail)) ? 1 : 0;
-  const progressPercentage = totalFields > 0 ? Math.round(((answeredCount + respondentEmailAnswered) / totalFields) * 100) : 0;
+  const progressPercentage = useSectionFlow && formSections.length > 0
+    ? Math.round((((currentSectionIndex) + ((answeredCount + respondentEmailAnswered) / Math.max(totalFields, 1))) / formSections.length) * 100)
+    : (totalFields > 0 ? Math.round(((answeredCount + respondentEmailAnswered) / totalFields) * 100) : 0);
+
+  const getOptionTileClass = (selected: boolean) =>
+    `relative overflow-hidden ${
+      selected
+        ? 'border-natural-primary/50 bg-natural-primary/5 shadow-[0_10px_25px_rgba(0,0,0,0.22)]'
+        : ''
+    }`;
+  const headerImageFit = form.theme?.headerImageFit || 'contain';
+  const headerImagePosition = form.theme?.headerImagePosition || 'center';
+  const headerImageObjectPosition =
+    headerImagePosition === 'top'
+      ? 'top center'
+      : headerImagePosition === 'bottom'
+        ? 'bottom center'
+        : headerImagePosition === 'left'
+          ? 'center left'
+          : headerImagePosition === 'right'
+            ? 'center right'
+            : 'center center';
 
   return (
-    <div className="bg-natural-bg min-h-screen py-16 px-6 relative" style={{ backgroundColor: form.theme?.backgroundColor || undefined }}>
-      <div className="fixed top-4 right-4 z-50">
-        <DarkModeToggle className="bg-white/50 backdrop-blur" />
-      </div>
+    <div className="bg-natural-bg min-h-screen py-16 px-6 relative grid-ambient" style={{ backgroundColor: form.theme?.backgroundColor || undefined }}>
       {form.settings?.showProgressBar && (
         <div className="fixed top-0 left-0 w-full z-50 bg-white/80 backdrop-blur border-b border-natural-border px-6 py-4 shadow-sm">
           <div className="max-w-[680px] mx-auto">
@@ -461,7 +602,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className={`max-w-[680px] mx-auto space-y-10 ${form.settings?.showProgressBar ? 'mt-8' : ''}`} style={{ fontFamily: form.theme?.bodyFont || 'var(--font-sans)' }}>
+      <form onSubmit={handleSubmit} className={`max-w-[720px] mx-auto space-y-10 ${form.settings?.showProgressBar ? 'mt-8' : ''}`} style={{ fontFamily: form.theme?.bodyFont || 'var(--font-sans)' }}>
         {isPreview && (
           <div className="bg-natural-primary text-white px-6 py-3 rounded-full text-xs font-bold uppercase tracking-widest mb-6 flex justify-center shadow-lg border border-natural-primary-hover" style={{ backgroundColor: form.theme?.accentColor || undefined }}>
             Previewing Form Structure
@@ -469,12 +610,25 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         )}
 
         {form.theme?.headerImage && (
-          <div className="w-full h-48 sm:h-64 rounded-[32px] overflow-hidden shadow-sm">
-            <img src={form.theme.headerImage} className="w-full h-full object-cover" alt="Form header" />
+          <div className="w-full rounded-[32px] overflow-hidden shadow-sm border border-natural-border bg-natural-bg/60 p-2">
+            <div className="w-full aspect-[16/5] rounded-[24px] overflow-hidden bg-natural-accent/70 flex items-center justify-center">
+              <img
+                src={form.theme.headerImage}
+                className={`w-full h-full ${headerImageFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+                style={{ objectPosition: headerImageObjectPosition }}
+                alt="Form header"
+              />
+            </div>
           </div>
         )}
 
-        <div className="w-full bg-white rounded-[32px] shadow-[0_10px_30px_rgba(0,0,0,0.03)] border-t-[8px] border-natural-primary p-12 relative" style={{ borderTopColor: form.theme?.accentColor || undefined }}>
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, ease: 'easeOut' }}
+          className="w-full surface-glass p-12 relative border-t-[8px] border-natural-primary"
+          style={{ borderTopColor: form.theme?.accentColor || undefined }}
+        >
           {showOwnerProfile && (
             <div className="mb-6 flex w-full justify-end">
               <div className="inline-flex max-w-full items-center gap-3 rounded-full border border-natural-border bg-natural-bg/80 px-3 py-2 text-left">
@@ -501,10 +655,16 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           )}
           <h1 className="text-4xl font-serif font-light text-natural-text mb-4" style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}>{form.title}</h1>
           <p className="text-lg text-natural-muted leading-relaxed font-light">{form.description}</p>
-        </div>
+        </motion.div>
 
         {showRespondentEmailField && (
-          <div className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-12 border border-natural-border relative group transition-all focus-within:ring-2 focus-within:ring-natural-primary/10" style={{ '--tw-ring-color': form.theme?.accentColor ? `${form.theme.accentColor}1a` : undefined } as any}>
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, ease: 'easeOut' }}
+            className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-12 border border-natural-border relative group transition-all focus-within:ring-2 focus-within:ring-natural-primary/10 interactive-lift"
+            style={{ '--tw-ring-color': form.theme?.accentColor ? `${form.theme.accentColor}1a` : undefined } as any}
+          >
             <div className="space-y-6">
               <div className="space-y-2">
                 <Label htmlFor="respondent-email" className="text-xl font-medium text-natural-text leading-snug">
@@ -527,7 +687,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                   required
                   aria-required="true"
                   aria-invalid={Boolean(respondentEmailError)}
-                  className={`h-14 rounded-2xl bg-natural-bg px-6 text-base focus:ring-natural-primary/10 ${respondentEmailError ? 'border-destructive' : 'border-natural-border'}`}
+                  className={`h-14 rounded-2xl bg-natural-bg px-6 text-base focus:ring-natural-primary/10 interactive-field ${respondentEmailError ? 'border-destructive' : 'border-natural-border'}`}
                 />
                 {respondentEmailError && (
                   <div className="text-destructive text-sm mt-3 font-medium">
@@ -536,17 +696,49 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 )}
               </div>
             </div>
-          </div>
+          </motion.div>
         )}
 
-        {visibleQuestions.map((question) => (
-          <div key={question.id} className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-12 border border-natural-border relative group transition-all focus-within:ring-2 focus-within:ring-natural-primary/10" style={{ '--tw-ring-color': form.theme?.accentColor ? `${form.theme.accentColor}1a` : undefined } as any}>
+        <AnimatePresence initial={false} mode="wait">
+          {useSectionFlow && activeSection && !activeSection.isDefault && (
+            <motion.div
+              key={activeSection.id}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-10 border border-natural-border relative group transition-all interactive-lift"
+            >
+            <div className="space-y-3">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-natural-muted">Section</p>
+              <h2 className="text-2xl font-serif text-natural-text" style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}>{activeSection.title}</h2>
+              {activeSection.description && <p className="text-natural-muted leading-relaxed">{activeSection.description}</p>}
+            </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {visibleQuestions.map((question, questionIndex) => (
+          <motion.div
+            key={question.id}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.24, delay: questionIndex * 0.04, ease: 'easeOut' }}
+            className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-12 border border-natural-border relative group transition-all focus-within:ring-2 focus-within:ring-natural-primary/10 interactive-lift"
+            style={{ '--tw-ring-color': form.theme?.accentColor ? `${form.theme.accentColor}1a` : undefined } as any}
+          >
             <div className="space-y-6">
+              {question.image && (
+                <div className="overflow-hidden rounded-[24px] border border-natural-border">
+                  <img src={question.image} alt={question.title} className="w-full h-56 object-cover" />
+                </div>
+              )}
               <div className="space-y-2">
                 <Label className="text-xl font-medium text-natural-text leading-snug">
                   {question.title} 
                   {question.required && <span className="text-destructive ml-2">*</span>}
                 </Label>
+                {question.description && <p className="text-natural-muted leading-relaxed font-light">{question.description}</p>}
               </div>
 
               <div className="pt-2">
@@ -620,8 +812,22 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                     required={question.required}
                   >
                     <div className="space-y-4">
-                      {question.options?.map((option, i) => (
-                        <div key={i} className="flex flex-col space-y-3 p-4 rounded-2xl hover:bg-natural-accent transition-colors cursor-pointer group/radio">
+                      {question.options?.map((option, i) => {
+                        const isSelected = answers[question.id] === option;
+                        return (
+                        <div key={i} className={`flex flex-col space-y-3 option-tile cursor-pointer group/radio ${getOptionTileClass(isSelected)}`}>
+                          <AnimatePresence>
+                            {isSelected && (
+                              <motion.span
+                                key={`radio-ripple-${question.id}-${i}`}
+                                initial={{ opacity: 0.25, scale: 0.2 }}
+                                animate={{ opacity: 0, scale: 2.1 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 0.35, ease: 'easeOut' }}
+                                className="pointer-events-none absolute left-3 top-3 h-8 w-8 rounded-full bg-natural-primary/40"
+                              />
+                            )}
+                          </AnimatePresence>
                           <div className="flex items-center space-x-4">
                             <RadioGroupItem 
                               value={option} 
@@ -635,6 +841,19 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                             <Label htmlFor={`${question.id}-${i}`} className="text-lg font-light text-natural-text cursor-pointer flex-1 py-1">
                               {option}
                             </Label>
+                            <AnimatePresence>
+                              {isSelected && (
+                                <motion.span
+                                  initial={{ opacity: 0, scale: 0.7 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  exit={{ opacity: 0, scale: 0.7 }}
+                                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-natural-primary text-white"
+                                >
+                                  <Check className="h-4 w-4" />
+                                </motion.span>
+                              )}
+                            </AnimatePresence>
                           </div>
                           {question.optionImages?.[i] && (
                             <div className="ml-10 max-w-[400px] overflow-hidden rounded-xl border border-natural-border">
@@ -642,9 +861,24 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                             </div>
                           )}
                         </div>
-                      ))}
-                      {question.hasOtherOption && (
-                        <div className="flex items-center space-x-4 p-4 rounded-2xl hover:bg-natural-accent transition-colors group/radio">
+                        );
+                      })}
+                      {question.hasOtherOption && (() => {
+                        const isOtherSelected = Boolean(answers[question.id] && !question.options?.includes(answers[question.id]));
+                        return (
+                        <div className={`flex items-center space-x-4 option-tile group/radio ${getOptionTileClass(isOtherSelected)}`}>
+                          <AnimatePresence>
+                            {isOtherSelected && (
+                              <motion.span
+                                key={`radio-ripple-${question.id}-other`}
+                                initial={{ opacity: 0.25, scale: 0.2 }}
+                                animate={{ opacity: 0, scale: 2.1 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 0.35, ease: 'easeOut' }}
+                                className="pointer-events-none absolute left-3 top-3 h-8 w-8 rounded-full bg-natural-primary/40"
+                              />
+                            )}
+                          </AnimatePresence>
                           <RadioGroupItem 
                             value="__other__" 
                             id={`${question.id}-other`} 
@@ -675,8 +909,21 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                             className="flex-1 bg-transparent border-0 border-b-2 border-natural-border rounded-none px-0 focus-visible:ring-0 focus-visible:border-natural-primary"
                             style={{ borderColor: answers[question.id] && !question.options?.includes(answers[question.id]) ? (form.theme?.accentColor || undefined) : undefined }}
                           />
+                          <AnimatePresence>
+                            {isOtherSelected && (
+                              <motion.span
+                                initial={{ opacity: 0, scale: 0.7 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.7 }}
+                                transition={{ duration: 0.18, ease: 'easeOut' }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-natural-primary text-white"
+                              >
+                                <Check className="h-4 w-4" />
+                              </motion.span>
+                            )}
+                          </AnimatePresence>
                         </div>
-                      )}
+                      )})()}
                     </div>
                   </RadioGroup>
                 )}
@@ -686,7 +933,19 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                     {question.options?.map((option, i) => {
                       const isChecked = (answers[question.id] || []).includes(option);
                       return (
-                        <div key={i} className="flex flex-col space-y-3 p-4 rounded-2xl hover:bg-natural-accent transition-colors cursor-pointer group/check">
+                        <div key={i} className={`flex flex-col space-y-3 option-tile cursor-pointer group/check ${getOptionTileClass(isChecked)}`}>
+                          <AnimatePresence>
+                            {isChecked && (
+                              <motion.span
+                                key={`check-ripple-${question.id}-${i}`}
+                                initial={{ opacity: 0.25, scale: 0.2 }}
+                                animate={{ opacity: 0, scale: 2.1 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 0.35, ease: 'easeOut' }}
+                                className="pointer-events-none absolute left-3 top-3 h-8 w-8 rounded-full bg-natural-primary/40"
+                              />
+                            )}
+                          </AnimatePresence>
                           <div className="flex items-center space-x-4">
                             <Checkbox 
                               id={`${question.id}-${i}`} 
@@ -701,6 +960,19 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                             <Label htmlFor={`${question.id}-${i}`} className="text-lg font-light text-natural-text cursor-pointer flex-1 py-1">
                               {option}
                             </Label>
+                            <AnimatePresence>
+                              {isChecked && (
+                                <motion.span
+                                  initial={{ opacity: 0, scale: 0.7 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  exit={{ opacity: 0, scale: 0.7 }}
+                                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-natural-primary text-white"
+                                >
+                                  <Check className="h-4 w-4" />
+                                </motion.span>
+                              )}
+                            </AnimatePresence>
                           </div>
                           {question.optionImages?.[i] && (
                             <div className="ml-10 max-w-[400px] overflow-hidden rounded-xl border border-natural-border">
@@ -713,7 +985,19 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                     {question.hasOtherOption && (() => {
                       const isOtherChecked = Array.isArray(answers[question.id]) && answers[question.id].some((o: string) => !question.options?.includes(o));
                       return (
-                        <div className="flex items-center space-x-4 p-4 rounded-2xl hover:bg-natural-accent transition-colors group/check">
+                        <div className={`flex items-center space-x-4 option-tile group/check ${getOptionTileClass(isOtherChecked)}`}>
+                          <AnimatePresence>
+                            {isOtherChecked && (
+                              <motion.span
+                                key={`check-ripple-${question.id}-other`}
+                                initial={{ opacity: 0.25, scale: 0.2 }}
+                                animate={{ opacity: 0, scale: 2.1 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 0.35, ease: 'easeOut' }}
+                                className="pointer-events-none absolute left-3 top-3 h-8 w-8 rounded-full bg-natural-primary/40"
+                              />
+                            )}
+                          </AnimatePresence>
                           <Checkbox 
                             id={`${question.id}-other`} 
                             checked={isOtherChecked}
@@ -754,6 +1038,19 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                             className="flex-1 bg-transparent border-0 border-b-2 border-natural-border rounded-none px-0 focus-visible:ring-0 focus-visible:border-natural-primary"
                             style={{ borderColor: isOtherChecked ? (form.theme?.accentColor || undefined) : undefined }}
                           />
+                          <AnimatePresence>
+                            {isOtherChecked && (
+                              <motion.span
+                                initial={{ opacity: 0, scale: 0.7 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.7 }}
+                                transition={{ duration: 0.18, ease: 'easeOut' }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-natural-primary text-white"
+                              >
+                                <Check className="h-4 w-4" />
+                              </motion.span>
+                            )}
+                          </AnimatePresence>
                         </div>
                       );
                     })()}
@@ -884,20 +1181,28 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 )}
               </div>
             </div>
-          </div>
+          </motion.div>
         ))}
 
-        <div className="flex justify-between items-center py-8">
-          <Button type="submit" size="lg" disabled={submitting} className="btn-natural px-10 h-14 text-lg" style={{ backgroundColor: form.theme?.accentColor || undefined }}>
-            {submitting ? 'Submitting...' : 'Submit Response'}
-          </Button>
-          <Button type="button" variant="ghost" onClick={() => {
-            setAnswers({});
-            setRespondentEmail('');
-            setRespondentEmailError('');
-          }} className="rounded-full text-natural-muted hover:text-red-500 font-medium">
-            Clear form
-          </Button>
+        <div className={`flex items-center py-8 ${useSectionFlow ? 'justify-between' : 'justify-end'}`}>
+          {useSectionFlow && (
+            <Button type="button" variant="ghost" onClick={goToPreviousSection} disabled={currentSectionIndex === 0 || submitting} className="rounded-full text-natural-muted hover:text-natural-primary font-medium">
+              Back
+            </Button>
+          )}
+          <div className="flex items-center gap-3">
+            <Button type="submit" size="lg" disabled={submitting} className="btn-natural px-10 h-14 text-lg" style={{ backgroundColor: form.theme?.accentColor || undefined }}>
+              {submitting ? 'Submitting...' : useSectionFlow && currentSectionIndex < formSections.length - 1 ? 'Next section' : 'Submit Response'}
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => {
+              setAnswers({});
+              setRespondentEmail('');
+              setRespondentEmailError('');
+              setCurrentSectionIndex(0);
+            }} className="rounded-full text-natural-muted hover:text-red-500 font-medium">
+              Clear form
+            </Button>
+          </div>
         </div>
       </form>
 

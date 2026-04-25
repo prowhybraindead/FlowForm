@@ -3,13 +3,12 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
 import { Form } from '../types';
-import { createFormRecord, deleteFormRecord, listFormsByCreator } from '../lib/formsApi';
+import { createFormRecord, deleteFormRecord, listAccessibleForms } from '../lib/formsApi';
 import { Card, CardHeader, CardTitle, CardDescription, CardFooter } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Plus, FileText, BarChart2, MoreVertical, PartyPopper, MessageSquare, Briefcase, Search, Copy, ExternalLink, Trash2 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { DarkModeToggle } from './DarkModeToggle';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu';
 
 interface DashboardProps {
@@ -22,11 +21,12 @@ const TEMPLATES = [
     id: 'blank',
     title: 'Blank Form',
     icon: Plus,
-    color: 'bg-natural-card dark:bg-natural-bg',
+    color: 'bg-natural-card',
     data: {
       title: 'Untitled Form',
       description: 'Add a description here',
       questions: [
+        { id: crypto.randomUUID(), type: 'section', title: 'Start here', description: 'Use this section to group your first questions.', required: false },
         { id: crypto.randomUUID(), type: 'short_answer', title: 'Untitled Question', required: false },
       ],
       settings: { collectEmails: false, limitOneResponse: false, isPublic: true },
@@ -36,7 +36,7 @@ const TEMPLATES = [
     id: 'party',
     title: 'Party Invite',
     icon: PartyPopper,
-    color: 'bg-orange-50 dark:bg-orange-950/20',
+    color: 'bg-orange-50',
     data: {
       title: 'Party Invitation',
       description: 'Join us for a celebration!',
@@ -52,7 +52,7 @@ const TEMPLATES = [
     id: 'feedback',
     title: 'Customer Feedback',
     icon: MessageSquare,
-    color: 'bg-blue-50 dark:bg-blue-950/20',
+    color: 'bg-blue-50',
     data: {
       title: 'Customer Feedback',
       description: 'We value your feedback to help us improve.',
@@ -68,7 +68,7 @@ const TEMPLATES = [
     id: 'contact',
     title: 'Contact Information',
     icon: Briefcase,
-    color: 'bg-teal-50 dark:bg-teal-950/20',
+    color: 'bg-teal-50',
     data: {
       title: 'Contact Information',
       description: 'Please leave your contact details so we can reach you.',
@@ -112,7 +112,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
     const fetchForms = async () => {
       if (!user) return;
       try {
-        setForms(await listFormsByCreator(user.uid));
+        setForms(await listAccessibleForms(user.uid));
       } catch (error) {
         console.error('Error fetching forms:', error);
       } finally {
@@ -125,13 +125,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
 
   const createForm = async (templateData: any = TEMPLATES[0].data) => {
     if (!user) return;
+
+    const hasSection = templateData.questions?.some((question: any) => question.type === 'section');
+    const questions = hasSection
+      ? templateData.questions
+      : [
+          { id: crypto.randomUUID(), type: 'section', title: 'Start here', description: 'Use this section to organize the first part of your form.', required: false },
+          ...templateData.questions,
+        ];
+
     const newForm: Omit<Form, 'id'> = {
       ...templateData,
       creatorId: user.uid,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       // Ensure new IDs for questions if importing a template with predefined questions
-      questions: templateData.questions.map((q: any) => ({ ...q, id: crypto.randomUUID() }))
+      questions: questions.map((q: any) => ({ ...q, id: crypto.randomUUID() }))
     };
 
     try {
@@ -155,14 +164,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
   };
 
   return (
-    <div className="container mx-auto p-8 space-y-10">
-      <div className="flex items-center justify-between bg-natural-card p-8 rounded-[32px] border border-natural-border shadow-sm">
+    <div className="container mx-auto p-8 space-y-10 grid-ambient">
+      <div className="flex items-center justify-between surface-glass p-8">
         <div>
           <h2 className="text-4xl font-serif font-light text-natural-text">Your Realm</h2>
           <p className="text-natural-muted mt-1">Manage your surveys and responses in peace.</p>
         </div>
         <div className="flex items-center gap-4">
-          <DarkModeToggle />
           <Button onClick={() => createForm()} className="btn-natural">
             <Plus className="mr-2 h-4 w-4" />
             Create New Form
@@ -177,7 +185,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
             <div 
               key={template.id} 
               onClick={() => createForm(template.data)}
-              className={`rounded-2xl border border-natural-border p-6 cursor-pointer hover:shadow-md transition-all duration-300 hover:border-natural-primary/30 flex flex-col items-center justify-center gap-4 text-center ${template.color}`}
+              className={`rounded-2xl border border-natural-border p-6 cursor-pointer hover:shadow-md transition-all duration-300 hover:border-natural-primary/30 flex flex-col items-center justify-center gap-4 text-center interactive-lift ${template.color}`}
             >
               <div className="p-4 bg-natural-bg rounded-full shadow-sm">
                 <template.icon className="h-6 w-6 text-natural-primary" />
@@ -245,7 +253,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.05 }}
             >
-              <Card className="card-natural hover:-translate-y-1 hover:scale-[1.02] hover:shadow-xl transition-all duration-300 group h-full flex flex-col border-transparent hover:border-natural-primary/20 cursor-pointer">
+              <Card className="card-natural interactive-lift group h-full flex flex-col border-transparent hover:border-natural-primary/20 cursor-pointer">
                 <CardHeader className="p-8 pb-4">
                   <div className="flex justify-between items-start mb-2">
                     <CardTitle className="text-lg font-medium text-natural-primary line-clamp-1">{form.title}</CardTitle>

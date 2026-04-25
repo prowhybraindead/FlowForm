@@ -26,6 +26,16 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     let active = true;
 
+    const isMissingSessionError = (error: unknown) => {
+      if (!error || typeof error !== 'object') return false;
+      const candidate = error as { name?: string; code?: string; message?: string };
+      return (
+        candidate.name === 'AuthSessionMissingError'
+        || candidate.code === 'session_not_found'
+        || candidate.message?.toLowerCase().includes('auth session missing')
+      );
+    };
+
     const setSessionUser = async (sessionUser: Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user']) => {
       if (sessionUser) {
         const fallbackName = sessionUser.user_metadata?.full_name ?? sessionUser.user_metadata?.name ?? sessionUser.email ?? null;
@@ -67,11 +77,15 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const initializeAuth = async () => {
       try {
-        const { data, error } = await supabase.auth.getUser();
-        if (error) throw error;
-        await setSessionUser(data.user);
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
+
+        const sessionUser = sessionData.session?.user ?? null;
+        await setSessionUser(sessionUser);
       } catch (error) {
-        console.error('Initial auth check failed:', error);
+        if (!isMissingSessionError(error)) {
+          console.error('Initial auth check failed:', error);
+        }
         if (active) {
           setUser(null);
           setProfileName('');
@@ -239,26 +253,42 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
 
   return (
     <div className="min-h-screen flex flex-col bg-natural-bg text-natural-text font-sans">
-      <header className="sticky top-0 z-50 w-full border-b border-natural-border bg-white flex items-center justify-between px-6 h-16 shrink-0">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-natural-primary rounded-xl flex items-center justify-center text-white">
-            <span className="font-bold">F</span>
+      <header className="sticky top-0 z-50 w-full border-b border-natural-border/80 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/80 h-16 shrink-0">
+        <div className="mx-auto flex h-full w-full max-w-[1400px] items-center justify-between px-4 sm:px-6">
+          <div className="flex items-center gap-3">
+            <div className="relative h-10 w-10 rounded-xl bg-gradient-to-br from-natural-primary to-[#181C14] text-white shadow-sm flex items-center justify-center ring-1 ring-black/5">
+              <span className="font-bold text-sm tracking-wide">FF</span>
+              <span className="absolute -bottom-1 -right-1 h-3 w-3 rounded-full bg-emerald-500 border-2 border-white" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="text-sm sm:text-base font-semibold tracking-tight text-[#1f211d] leading-none">FlowForm</h1>
+                <span className="inline-flex items-center rounded-full border border-natural-border bg-natural-accent px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-natural-muted">
+                  Studio
+                </span>
+              </div>
+              <p className="text-[10px] text-natural-muted uppercase tracking-[0.2em] leading-none mt-1 hidden sm:block">Build Forms That Convert</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-sm font-semibold text-[#2D2D2A]">FormFlow</h1>
-            <p className="text-[10px] text-natural-muted uppercase tracking-wider">Form Builder Pro</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
+
+          <div className="flex items-center gap-2 sm:gap-2.5">
           <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
-            <DialogTrigger render={<Button variant="ghost" size="sm" className="rounded-full hover:bg-natural-accent text-natural-muted hover:text-natural-primary" />}>
+            <DialogTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="rounded-full hover:bg-natural-accent text-natural-muted hover:text-natural-primary max-w-[200px]"
+                />
+              }
+            >
               {user.photoURL ? (
                 <img src={user.photoURL} alt="" className="h-6 w-6 rounded-full object-cover" />
               ) : (
                 <UserRound className="h-4 w-4" />
               )}
-              <span className="hidden sm:inline-block">
-                {user.displayName || 'Profile'}
+              <span className="hidden sm:inline-block truncate max-w-[130px]">
+                {user.displayName || user.email || 'Profile'}
               </span>
             </DialogTrigger>
             <DialogContent className="sm:max-w-md bg-white border border-natural-border p-6 shadow-xl" showCloseButton={true}>
@@ -334,13 +364,11 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
               </DialogFooter>
             </DialogContent>
           </Dialog>
-          <span className="text-xs font-medium text-natural-muted hidden sm:inline-block">
-            {user.email}
-          </span>
           <Button variant="ghost" size="sm" onClick={handleLogout} className="rounded-full hover:bg-natural-accent text-natural-muted hover:text-natural-primary">
             <LogOut className="mr-2 h-4 w-4" />
-            Sign Out
+            <span className="hidden sm:inline">Sign Out</span>
           </Button>
+          </div>
         </div>
       </header>
       <main className="flex-1 overflow-auto">{children}</main>
