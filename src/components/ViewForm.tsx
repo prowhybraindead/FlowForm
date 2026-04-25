@@ -751,7 +751,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
       </form>
 
       <Dialog open={showConfirmSubmit} onOpenChange={setShowConfirmSubmit}>
-        <DialogContent className="sm:max-w-md bg-white border border-natural-border p-6 shadow-xl max-h-[90vh] flex flex-col" showCloseButton={true}>
+        <DialogContent className="sm:max-w-md bg-white border border-natural-border p-6 shadow-xl max-h-[90vh] flex flex-col overflow-hidden" showCloseButton={true}>
           <DialogHeader className="mb-4">
             <DialogTitle className="text-xl font-serif text-natural-text">Confirm Submission</DialogTitle>
             <DialogDescription className="text-natural-muted">
@@ -759,7 +759,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
             </DialogDescription>
           </DialogHeader>
           
-          <div className="flex-1 overflow-y-auto pr-2 space-y-4 py-2 border-y border-natural-border mb-4">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2 space-y-4 py-2 border-y border-natural-border mb-4">
             {form && form.questions.filter(isQuestionVisible).filter(q => {
               const ans = answers[q.id];
               return ans && (!Array.isArray(ans) || ans.length > 0);
@@ -772,7 +772,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 return (
                   <div key={q.id} className="border-b border-natural-border/50 pb-3 last:border-0 last:pb-0">
                     <h4 className="font-medium text-sm text-natural-text mb-1">{q.title || 'Untitled Question'}</h4>
-                    <div className="text-sm text-natural-primary whitespace-pre-wrap font-light">
+                    <div className="text-sm text-natural-primary whitespace-pre-wrap break-words font-light">
                       {Array.isArray(ans) ? ans.join(', ') : ans.toString()}
                     </div>
                   </div>
@@ -781,11 +781,11 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
             )}
           </div>
 
-          <DialogFooter className="flex flex-row justify-end space-x-3 bg-transparent border-t-0 -mx-0 -mb-0 p-0 sm:justify-end mt-2">
-            <Button variant="outline" onClick={() => setShowConfirmSubmit(false)} disabled={submitting}>
+          <DialogFooter className="shrink-0 flex flex-col-reverse gap-3 bg-transparent border-t-0 -mx-0 -mb-0 p-0 sm:flex-row sm:justify-end mt-2">
+            <Button variant="outline" onClick={() => setShowConfirmSubmit(false)} disabled={submitting} className="w-full sm:w-auto">
               Cancel
             </Button>
-            <Button onClick={executeFinalSubmit} disabled={submitting} className="btn-natural" style={{ backgroundColor: form.theme?.accentColor || undefined }}>
+            <Button onClick={executeFinalSubmit} disabled={submitting} className="btn-natural w-full sm:w-auto" style={{ backgroundColor: form.theme?.accentColor || undefined }}>
               {submitting ? 'Submitting...' : 'Submit'}
             </Button>
           </DialogFooter>
