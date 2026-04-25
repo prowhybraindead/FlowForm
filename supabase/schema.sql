@@ -118,13 +118,28 @@ create policy "owners can update forms"
         and form_collaborators.role = 'editor'
     )
   )
-  with check (
-    creator_id = (
-      select existing.creator_id
-      from public.forms as existing
-      where existing.id = forms.id
-    )
-  );
+  with check (true);
+
+create or replace function public.prevent_form_creator_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'UPDATE' and new.creator_id is distinct from old.creator_id then
+    raise exception 'Changing form creator is not allowed';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists prevent_form_creator_change_trigger on public.forms;
+create trigger prevent_form_creator_change_trigger
+  before update on public.forms
+  for each row
+  execute function public.prevent_form_creator_change();
 
 create policy "owners can delete forms"
   on public.forms for delete
