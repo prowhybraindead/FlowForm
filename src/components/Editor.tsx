@@ -852,14 +852,46 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                         </TooltipContent>
                       </Tooltip>
                     </Label>
-                    <p className="text-sm text-natural-muted">Respondents will be required to enter their email.</p>
+                    <p className="text-sm text-natural-muted">
+                      {currentForm.settings?.limitOneResponse
+                        ? 'Required because one-response limit is enabled.'
+                        : 'Respondents will be required to enter their email.'}
+                    </p>
                   </div>
                   <Switch 
-                    checked={currentForm.settings?.collectEmails || false}
-                    onCheckedChange={(checked) => updateForm({ settings: { ...currentForm.settings, collectEmails: checked } })}
+                    checked={currentForm.settings?.collectEmails || currentForm.settings?.limitOneResponse || false}
+                    disabled={currentForm.settings?.limitOneResponse || false}
+                    onCheckedChange={(checked) => updateForm({
+                      settings: {
+                        ...currentForm.settings,
+                        collectEmails: checked,
+                        limitOneResponse: checked ? currentForm.settings?.limitOneResponse : false,
+                      },
+                    })}
                   />
                 </div>
-                
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label className="text-base font-medium text-natural-text flex items-center gap-2">
+                      Show owner profile
+                      <Tooltip>
+                        <TooltipTrigger type="button" className="cursor-help">
+                          <Info className="h-4 w-4 text-natural-muted hover:text-natural-primary transition-colors" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Shows a small creator badge in the public form header.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </Label>
+                    <p className="text-sm text-natural-muted">Display who owns this form using your profile name and avatar URL.</p>
+                  </div>
+                  <Switch
+                    checked={currentForm.settings?.showOwnerProfile || false}
+                    onCheckedChange={(checked) => updateForm({ settings: { ...currentForm.settings, showOwnerProfile: checked } })}
+                  />
+                </div>
+                 
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
                     <Label className="text-base font-medium text-natural-text flex items-center gap-2">
@@ -869,15 +901,21 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                           <Info className="h-4 w-4 text-natural-muted hover:text-natural-primary transition-colors" />
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>Restricts respondents to one submission per session to prevent duplicate entries.</p>
+                          <p>Requires a valid email address and restricts each email to one submission.</p>
                         </TooltipContent>
                       </Tooltip>
                     </Label>
-                    <p className="text-sm text-natural-muted">Respondents can only submit the form once.</p>
+                    <p className="text-sm text-natural-muted">Adds a required email field and allows one response per email.</p>
                   </div>
                   <Switch 
                     checked={currentForm.settings?.limitOneResponse || false}
-                    onCheckedChange={(checked) => updateForm({ settings: { ...currentForm.settings, limitOneResponse: checked } })}
+                    onCheckedChange={(checked) => updateForm({
+                      settings: {
+                        ...currentForm.settings,
+                        limitOneResponse: checked,
+                        collectEmails: checked ? true : currentForm.settings?.collectEmails,
+                      },
+                    })}
                   />
                 </div>
                 

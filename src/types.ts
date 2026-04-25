@@ -62,6 +62,7 @@ export interface Form {
     thankYouMessage?: string;
     redirectUrlAfterSubmit?: string;
     showProgressBar?: boolean;
+    showOwnerProfile?: boolean;
   };
   theme?: {
     accentColor?: string;
@@ -72,6 +73,13 @@ export interface Form {
     logo?: string;
   };
   views?: number;
+}
+
+export interface UserProfile {
+  userId: string;
+  displayName: string;
+  avatarUrl?: string;
+  updatedAt?: string;
 }
 
 export interface Response {

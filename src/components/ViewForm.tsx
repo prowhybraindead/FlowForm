@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useEffect, useState, useRef } from 'react';
-import { Form, Response } from '../types';
+import { Form, Response, UserProfile } from '../types';
 import { createResponseRecord, getFormRecord, incrementFormViews } from '../lib/formsApi';
+import { getUserProfile } from '../lib/profilesApi';
 import { uploadImageAsset } from '../lib/imageUpload';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
@@ -22,12 +23,27 @@ interface ViewFormProps {
   isPreview?: boolean;
 }
 
+function normalizeRespondentEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+function isValidEmailFormat(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function requiresRespondentEmail(form: Form | null) {
+  return Boolean(form?.settings?.collectEmails || form?.settings?.limitOneResponse);
+}
+
 export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false }) => {
   const { isDark } = useDarkMode();
   const [form, setForm] = useState<Form | null>(null);
   const [answers, setAnswers] = useState<{ [key: string]: any }>({});
   const [otherText, setOtherText] = useState<{ [key: string]: string }>({});
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
+  const [respondentEmail, setRespondentEmail] = useState('');
+  const [respondentEmailError, setRespondentEmailError] = useState('');
+  const [ownerProfile, setOwnerProfile] = useState<UserProfile | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -40,6 +56,16 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         const fetchedForm = await getFormRecord(formId);
         if (fetchedForm) {
           setForm(fetchedForm);
+          if (fetchedForm.settings?.showOwnerProfile) {
+            try {
+              setOwnerProfile(await getUserProfile(fetchedForm.creatorId));
+            } catch (error) {
+              console.error('Error fetching owner profile:', error);
+              setOwnerProfile(null);
+            }
+          } else {
+            setOwnerProfile(null);
+          }
           
           if (!isPreview) {
             try {
@@ -73,9 +99,43 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
       return;
     }
 
+    const shouldRequireRespondentEmail = requiresRespondentEmail(form);
+    const normalizedRespondentEmail = normalizeRespondentEmail(respondentEmail);
+
+    if (shouldRequireRespondentEmail && !normalizedRespondentEmail) {
+      setRespondentEmailError('Email address is required');
+      toast.error('Please enter your email address.');
+      return;
+    }
+
+    if (shouldRequireRespondentEmail && !isValidEmailFormat(normalizedRespondentEmail)) {
+      setRespondentEmailError('Enter a valid email address');
+      toast.error('Please enter a valid email address.');
+      return;
+    }
+
     // Server-side validation for emails before submission
     const emailQuestions = form?.questions?.filter(q => isQuestionVisible(q) && q.type === 'email' && answers[q.id]) || [];
     setSubmitting(true);
+    if (shouldRequireRespondentEmail) {
+      try {
+        const res = await fetch('/api/validate-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: normalizedRespondentEmail })
+        });
+        const data = await res.json();
+        if (!data.valid) {
+          setSubmitting(false);
+          setRespondentEmailError(data.error || 'Enter a valid email address');
+          toast.error('Please enter a valid email address.');
+          return;
+        }
+      } catch (err) {
+        console.error('Respondent email validation error:', err);
+      }
+    }
+
     for (const q of emailQuestions) {
       try {
         const res = await fetch('/api/validate-email', {
@@ -119,6 +179,9 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     try {
       await createResponseRecord({
         formId,
+        respondentEmail: requiresRespondentEmail(form)
+          ? normalizeRespondentEmail(respondentEmail)
+          : undefined,
         submittedAt: Date.now(),
         answers,
         timeToComplete,
@@ -133,7 +196,18 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
       }
     } catch (error: any) {
       console.error('Error submitting response:', error);
-      toast.error('Failed to submit response: ' + error.message);
+      const message = String(error?.message || 'Unknown error');
+      if (message.includes('already submitted')) {
+        toast.error('This email has already submitted a response for this form.');
+      } else if (message.includes('Respondent email is required')) {
+        setRespondentEmailError('Email address is required');
+        toast.error('Please enter your email address.');
+      } else if (message.includes('Respondent email is invalid')) {
+        setRespondentEmailError('Enter a valid email address');
+        toast.error('Please enter a valid email address.');
+      } else {
+        toast.error('Failed to submit response: ' + message);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -243,6 +317,19 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     }
   };
 
+  const updateRespondentEmail = (value: string) => {
+    setRespondentEmail(value);
+    const normalizedEmail = normalizeRespondentEmail(value);
+
+    if (!normalizedEmail) {
+      setRespondentEmailError(requiresRespondentEmail(form) ? 'Email address is required' : '');
+    } else if (!isValidEmailFormat(normalizedEmail)) {
+      setRespondentEmailError('Enter a valid email address');
+    } else {
+      setRespondentEmailError('');
+    }
+  };
+
   if (loading) return (
     <div className="flex h-screen items-center justify-center">
       <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
@@ -303,6 +390,8 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
             <Button variant="outline" onClick={() => {
               setSubmitted(false);
               setAnswers({});
+              setRespondentEmail('');
+              setRespondentEmailError('');
             }}>
               Submit another response
             </Button>
@@ -336,13 +425,16 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
   };
 
   const visibleQuestions = form.questions.filter(isQuestionVisible);
-  const totalQuestions = visibleQuestions.length;
+  const showRespondentEmailField = requiresRespondentEmail(form);
+  const showOwnerProfile = Boolean(form.settings?.showOwnerProfile && ownerProfile);
+  const totalFields = visibleQuestions.length + (showRespondentEmailField ? 1 : 0);
   const answeredCount = visibleQuestions.filter((q) => {
     const answer = answers[q.id];
     if (Array.isArray(answer)) return answer.length > 0;
     return !!answer;
   }).length;
-  const progressPercentage = totalQuestions > 0 ? Math.round((answeredCount / totalQuestions) * 100) : 0;
+  const respondentEmailAnswered = showRespondentEmailField && isValidEmailFormat(normalizeRespondentEmail(respondentEmail)) ? 1 : 0;
+  const progressPercentage = totalFields > 0 ? Math.round(((answeredCount + respondentEmailAnswered) / totalFields) * 100) : 0;
 
   return (
     <div className="bg-natural-bg min-h-screen py-16 px-6 relative" style={{ backgroundColor: form.theme?.backgroundColor || undefined }}>
@@ -383,6 +475,25 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         )}
 
         <div className="w-full bg-white rounded-[32px] shadow-[0_10px_30px_rgba(0,0,0,0.03)] border-t-[8px] border-natural-primary p-12 relative" style={{ borderTopColor: form.theme?.accentColor || undefined }}>
+          {showOwnerProfile && (
+            <div className="mb-6 flex w-full justify-end">
+              <div className="inline-flex max-w-full items-center gap-3 rounded-full border border-natural-border bg-natural-bg/80 px-3 py-2 text-left">
+                <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-white border border-natural-border flex items-center justify-center">
+                  {ownerProfile?.avatarUrl ? (
+                    <img src={ownerProfile.avatarUrl} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <span className="text-xs font-bold text-natural-primary">
+                      {(ownerProfile?.displayName || 'F').charAt(0).toUpperCase()}
+                    </span>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-widest text-natural-muted">Created by</p>
+                  <p className="truncate text-sm font-medium text-natural-text">{ownerProfile?.displayName}</p>
+                </div>
+              </div>
+            </div>
+          )}
           {form.theme?.logo && (
             <div className="mb-6 w-24 h-24">
               <img src={form.theme.logo} alt="Form Logo" className="w-full h-full object-contain" />
@@ -391,6 +502,42 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           <h1 className="text-4xl font-serif font-light text-natural-text mb-4" style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}>{form.title}</h1>
           <p className="text-lg text-natural-muted leading-relaxed font-light">{form.description}</p>
         </div>
+
+        {showRespondentEmailField && (
+          <div className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-12 border border-natural-border relative group transition-all focus-within:ring-2 focus-within:ring-natural-primary/10" style={{ '--tw-ring-color': form.theme?.accentColor ? `${form.theme.accentColor}1a` : undefined } as any}>
+            <div className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="respondent-email" className="text-xl font-medium text-natural-text leading-snug">
+                  Email address <span className="text-destructive ml-2">*</span>
+                </Label>
+                {form.settings?.limitOneResponse && (
+                  <p className="text-sm text-natural-muted font-light">
+                    This form allows one response per email address.
+                  </p>
+                )}
+              </div>
+              <div className="pt-2">
+                <Input
+                  id="respondent-email"
+                  type="email"
+                  aria-label="Email address"
+                  placeholder="name@example.com"
+                  value={respondentEmail}
+                  onChange={(event) => updateRespondentEmail(event.target.value)}
+                  required
+                  aria-required="true"
+                  aria-invalid={Boolean(respondentEmailError)}
+                  className={`h-14 rounded-2xl bg-natural-bg px-6 text-base focus:ring-natural-primary/10 ${respondentEmailError ? 'border-destructive' : 'border-natural-border'}`}
+                />
+                {respondentEmailError && (
+                  <div className="text-destructive text-sm mt-3 font-medium">
+                    {respondentEmailError}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {visibleQuestions.map((question) => (
           <div key={question.id} className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-12 border border-natural-border relative group transition-all focus-within:ring-2 focus-within:ring-natural-primary/10" style={{ '--tw-ring-color': form.theme?.accentColor ? `${form.theme.accentColor}1a` : undefined } as any}>
@@ -744,7 +891,11 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           <Button type="submit" size="lg" disabled={submitting} className="btn-natural px-10 h-14 text-lg" style={{ backgroundColor: form.theme?.accentColor || undefined }}>
             {submitting ? 'Submitting...' : 'Submit Response'}
           </Button>
-          <Button type="button" variant="ghost" onClick={() => setAnswers({})} className="rounded-full text-natural-muted hover:text-red-500 font-medium">
+          <Button type="button" variant="ghost" onClick={() => {
+            setAnswers({});
+            setRespondentEmail('');
+            setRespondentEmailError('');
+          }} className="rounded-full text-natural-muted hover:text-red-500 font-medium">
             Clear form
           </Button>
         </div>
@@ -760,10 +911,18 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           </DialogHeader>
           
           <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2 space-y-4 py-2 border-y border-natural-border mb-4">
+            {showRespondentEmailField && normalizeRespondentEmail(respondentEmail) && (
+              <div className="border-b border-natural-border/50 pb-3">
+                <h4 className="font-medium text-sm text-natural-text mb-1">Email address</h4>
+                <div className="text-sm text-natural-primary whitespace-pre-wrap break-words font-light">
+                  {normalizeRespondentEmail(respondentEmail)}
+                </div>
+              </div>
+            )}
             {form && form.questions.filter(isQuestionVisible).filter(q => {
               const ans = answers[q.id];
               return ans && (!Array.isArray(ans) || ans.length > 0);
-            }).length === 0 ? (
+            }).length === 0 && !normalizeRespondentEmail(respondentEmail) ? (
               <div className="text-sm text-natural-muted italic py-4">No answers provided.</div>
             ) : (
               form?.questions.filter(isQuestionVisible).map(q => {

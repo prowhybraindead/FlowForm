@@ -2,10 +2,14 @@
 
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { ensureUserProfile, isValidAvatarUrl, upsertUserProfile } from '../lib/profilesApi';
 import { useAuthStore } from '../store/useAuthStore';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { LogIn, LogOut } from 'lucide-react';
+import { Label } from './ui/label';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
+import { LogIn, LogOut, UserRound } from 'lucide-react';
+import { toast } from 'sonner';
 
 export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading, setUser, setLoading } = useAuthStore();
@@ -13,28 +17,59 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileName, setProfileName] = useState('');
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState('');
+  const [profileError, setProfileError] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
 
   useEffect(() => {
-    const setSessionUser = (sessionUser: Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user']) => {
+    const setSessionUser = async (sessionUser: Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user']) => {
       if (sessionUser) {
-        setUser({
-          uid: sessionUser.id,
-          email: sessionUser.email ?? null,
-          displayName: sessionUser.user_metadata?.full_name ?? sessionUser.user_metadata?.name ?? null,
-          photoURL: sessionUser.user_metadata?.avatar_url ?? null,
-        });
+        const fallbackName = sessionUser.user_metadata?.full_name ?? sessionUser.user_metadata?.name ?? sessionUser.email ?? null;
+        const fallbackAvatarUrl = sessionUser.user_metadata?.avatar_url ?? null;
+
+        try {
+          const profile = await ensureUserProfile({
+            userId: sessionUser.id,
+            email: sessionUser.email,
+            displayName: fallbackName,
+            avatarUrl: fallbackAvatarUrl,
+          });
+
+          setUser({
+            uid: sessionUser.id,
+            email: sessionUser.email ?? null,
+            displayName: profile.displayName,
+            photoURL: profile.avatarUrl ?? null,
+          });
+          setProfileName(profile.displayName);
+          setProfileAvatarUrl(profile.avatarUrl ?? '');
+        } catch (error) {
+          console.error('Profile load error:', error);
+          setUser({
+            uid: sessionUser.id,
+            email: sessionUser.email ?? null,
+            displayName: fallbackName,
+            photoURL: fallbackAvatarUrl,
+          });
+          setProfileName(fallbackName || '');
+          setProfileAvatarUrl(fallbackAvatarUrl || '');
+        }
       } else {
         setUser(null);
+        setProfileName('');
+        setProfileAvatarUrl('');
       }
     };
 
-    supabase.auth.getUser().then(({ data }) => {
-      setSessionUser(data.user);
+    supabase.auth.getUser().then(async ({ data }) => {
+      await setSessionUser(data.user);
       setLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSessionUser(session?.user ?? null);
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      await setSessionUser(session?.user ?? null);
       setLoading(false);
     });
 
@@ -68,6 +103,52 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
       await supabase.auth.signOut();
     } catch (error) {
       console.error('Logout error:', error);
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    if (!user) return;
+
+    const displayName = profileName.trim();
+    const avatarUrl = profileAvatarUrl.trim();
+
+    if (!displayName) {
+      setProfileError('Display name is required.');
+      return;
+    }
+
+    if (avatarUrl.toLowerCase().startsWith('data:')) {
+      setProfileError('Avatar must be a URL, not a base64 data string.');
+      return;
+    }
+
+    if (!isValidAvatarUrl(avatarUrl)) {
+      setProfileError('Avatar URL must start with http:// or https://.');
+      return;
+    }
+
+    setSavingProfile(true);
+    setProfileError('');
+    try {
+      const profile = await upsertUserProfile({
+        userId: user.uid,
+        displayName,
+        avatarUrl: avatarUrl || undefined,
+      });
+      setUser({
+        ...user,
+        displayName: profile.displayName,
+        photoURL: profile.avatarUrl ?? null,
+      });
+      setProfileName(profile.displayName);
+      setProfileAvatarUrl(profile.avatarUrl ?? '');
+      setProfileOpen(false);
+      toast.success('Profile updated');
+    } catch (error: any) {
+      console.error('Profile save error:', error);
+      setProfileError(error.message || 'Unable to save profile.');
+    } finally {
+      setSavingProfile(false);
     }
   };
 
@@ -137,6 +218,90 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
+            <DialogTrigger render={<Button variant="ghost" size="sm" className="rounded-full hover:bg-natural-accent text-natural-muted hover:text-natural-primary" />}>
+              {user.photoURL ? (
+                <img src={user.photoURL} alt="" className="h-6 w-6 rounded-full object-cover" />
+              ) : (
+                <UserRound className="h-4 w-4" />
+              )}
+              <span className="hidden sm:inline-block">
+                {user.displayName || 'Profile'}
+              </span>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-md bg-white border border-natural-border p-6 shadow-xl" showCloseButton={true}>
+              <DialogHeader className="mb-2">
+                <DialogTitle className="text-xl font-serif text-natural-text">Profile</DialogTitle>
+                <DialogDescription className="text-natural-muted">
+                  This information can be shown on public forms when enabled in form settings.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-5 py-2">
+                <div className="flex items-center gap-4">
+                  <div className="h-14 w-14 overflow-hidden rounded-full border border-natural-border bg-natural-bg flex items-center justify-center">
+                    {profileAvatarUrl && isValidAvatarUrl(profileAvatarUrl) ? (
+                      <img src={profileAvatarUrl} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <UserRound className="h-6 w-6 text-natural-muted" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-natural-text truncate">{profileName || user.email}</p>
+                    <p className="text-xs text-natural-muted truncate">{user.email}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="profile-display-name" className="text-sm font-medium text-natural-text">Display name</Label>
+                  <Input
+                    id="profile-display-name"
+                    value={profileName}
+                    onChange={(event) => setProfileName(event.target.value)}
+                    placeholder="Your public name"
+                    className="h-11 rounded-xl bg-natural-bg"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="profile-avatar-url" className="text-sm font-medium text-natural-text">Avatar URL</Label>
+                  <Input
+                    id="profile-avatar-url"
+                    value={profileAvatarUrl}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setProfileAvatarUrl(value);
+                      if (value.trim().toLowerCase().startsWith('data:')) {
+                        setProfileError('Avatar must be a URL, not a base64 data string.');
+                      } else if (value.trim() && !isValidAvatarUrl(value)) {
+                        setProfileError('Avatar URL must start with http:// or https://.');
+                      } else {
+                        setProfileError('');
+                      }
+                    }}
+                    placeholder="https://example.com/avatar.png"
+                    className="h-11 rounded-xl bg-natural-bg"
+                  />
+                  <p className="text-xs text-natural-muted">Use a direct http(s) image URL. Base64 data URLs are not accepted.</p>
+                </div>
+
+                {profileError && (
+                  <p className="rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                    {profileError}
+                  </p>
+                )}
+              </div>
+
+              <DialogFooter className="bg-transparent border-t-0 -mx-0 -mb-0 p-0">
+                <Button variant="outline" onClick={() => setProfileOpen(false)} disabled={savingProfile}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSaveProfile} disabled={savingProfile} className="btn-natural">
+                  {savingProfile ? 'Saving...' : 'Save profile'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <span className="text-xs font-medium text-natural-muted hidden sm:inline-block">
             {user.email}
           </span>

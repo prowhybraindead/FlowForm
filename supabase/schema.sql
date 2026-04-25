@@ -24,11 +24,28 @@ create table if not exists public.responses (
   timezone text
 );
 
+create table if not exists public.profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  display_name text not null check (char_length(display_name) between 1 and 120),
+  avatar_url text check (
+    avatar_url is null
+    or (
+      char_length(avatar_url) <= 1000
+      and avatar_url ~* '^https?://'
+      and avatar_url !~* '^data:'
+    )
+  ),
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists forms_creator_updated_idx on public.forms (creator_id, updated_at desc);
 create index if not exists responses_form_submitted_idx on public.responses (form_id, submitted_at desc);
+create index if not exists responses_form_email_idx on public.responses (form_id, lower(respondent_email))
+where respondent_email is not null;
 
 alter table public.forms enable row level security;
 alter table public.responses enable row level security;
+alter table public.profiles enable row level security;
 
 drop policy if exists "owners can list own forms" on public.forms;
 drop policy if exists "owners can create forms" on public.forms;
@@ -67,6 +84,25 @@ create policy "owners can delete forms"
 
 drop policy if exists "owners can read form responses" on public.responses;
 drop policy if exists "public can submit responses to live public forms" on public.responses;
+drop policy if exists "public can read profiles" on public.profiles;
+drop policy if exists "users can create own profile" on public.profiles;
+drop policy if exists "users can update own profile" on public.profiles;
+
+create policy "public can read profiles"
+  on public.profiles for select
+  to anon, authenticated
+  using (true);
+
+create policy "users can create own profile"
+  on public.profiles for insert
+  to authenticated
+  with check (user_id = auth.uid());
+
+create policy "users can update own profile"
+  on public.profiles for update
+  to authenticated
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid());
 
 create policy "owners can read form responses"
   on public.responses for select
@@ -95,6 +131,62 @@ create policy "public can submit responses to live public forms"
       )
     )
   );
+
+create or replace function public.enforce_response_email_rules()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_form_settings jsonb;
+  should_collect_email boolean;
+  should_limit_one_response boolean;
+begin
+  select settings
+  into target_form_settings
+  from public.forms
+  where id = new.form_id;
+
+  should_collect_email := coalesce((target_form_settings->>'collectEmails')::boolean, false);
+  should_limit_one_response := coalesce((target_form_settings->>'limitOneResponse')::boolean, false);
+
+  if should_collect_email or should_limit_one_response then
+    if new.respondent_email is null or btrim(new.respondent_email) = '' then
+      raise exception 'Respondent email is required for this form';
+    end if;
+
+    new.respondent_email := lower(btrim(new.respondent_email));
+
+    if new.respondent_email !~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$' then
+      raise exception 'Respondent email is invalid';
+    end if;
+  end if;
+
+  if should_limit_one_response then
+    perform pg_advisory_xact_lock(
+      hashtextextended(new.form_id::text || ':' || new.respondent_email, 0)
+    );
+
+    if exists (
+      select 1
+      from public.responses
+      where form_id = new.form_id
+        and lower(respondent_email) = new.respondent_email
+    ) then
+      raise exception 'This email has already submitted a response for this form';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_response_email_rules_trigger on public.responses;
+create trigger enforce_response_email_rules_trigger
+  before insert on public.responses
+  for each row
+  execute function public.enforce_response_email_rules();
 
 create or replace function public.increment_form_views(target_form_id uuid)
 returns void
