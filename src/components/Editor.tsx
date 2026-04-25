@@ -177,6 +177,7 @@ type EditorFlowSection = {
   title: string;
   questions: Question[];
   isDefault: boolean;
+  branchToSectionId?: string | '__submit__';
 };
 
 type EditorFlowEdge = {
@@ -694,6 +695,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
       title: currentForm.title || 'Intro',
       questions: [],
       isDefault: true,
+      branchToSectionId: undefined,
     };
     let sawSectionMarker = false;
 
@@ -708,6 +710,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           title: question.title || 'Untitled section',
           questions: [],
           isDefault: false,
+          branchToSectionId: question.branchToSectionId,
         };
         sections.push(currentSection);
         sawSectionMarker = true;
@@ -770,8 +773,37 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     });
 
     for (const question of questions) {
-      if (question.type === 'section') continue;
       const sourceSectionIndex = questionSectionIndexById.get(question.id) ?? 0;
+
+      if (question.type === 'section') {
+        if (
+          question.branchToSectionId &&
+          question.branchToSectionId !== '__submit__' &&
+          !realSectionIdSet.has(question.branchToSectionId)
+        ) {
+          warnings.push({
+            type: 'invalid_target',
+            message: `Section "${question.title || 'Untitled section'}" routes to a missing section.`,
+            questionId: question.id,
+          });
+        }
+
+        if (
+          question.branchToSectionId &&
+          question.branchToSectionId !== '__submit__' &&
+          realSectionIdSet.has(question.branchToSectionId)
+        ) {
+          const targetIndex = sectionIndexMap.get(question.branchToSectionId);
+          if (targetIndex !== undefined && targetIndex <= sourceSectionIndex) {
+            warnings.push({
+              type: 'backward_route',
+              message: `Section "${question.title || 'Untitled section'}" routes backward and may create loops.`,
+              questionId: question.id,
+            });
+          }
+        }
+        continue;
+      }
 
       if (
         question.branchToSectionId &&
@@ -879,6 +911,12 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
             label: `${decisiveQuestion!.title || 'Untitled question'} (forced)`,
           });
         });
+      } else if (section.branchToSectionId) {
+        recordEdge({
+          type: 'branch',
+          targetId: section.branchToSectionId,
+          label: 'Section fallback route',
+        });
       } else {
         const nextSection = sections[index + 1];
         if (nextSection) {
@@ -975,6 +1013,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     ? `${currentForm.settings.customDomain.replace(/\/$/, '')}/f/${formId}` 
     : `${window.location.origin}/f/${formId}`;
   const headerImageFit = currentForm.theme?.headerImageFit || 'contain';
+  const questionImageFit = currentForm.theme?.questionImageFit || 'auto';
   const headerImagePosition = currentForm.theme?.headerImagePosition || 'center';
   const headerImageObjectPosition =
     headerImagePosition === 'top'
@@ -1329,6 +1368,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                     accentColor={currentForm.theme?.accentColor}
                     titleFont={currentForm.theme?.titleFont}
                     bodyFont={currentForm.theme?.bodyFont}
+                    questionImageFit={questionImageFit}
                     isActiveDrag={activeDragQuestionId === question.id}
                   />
                 ))}
@@ -1464,6 +1504,24 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                       </button>
                     </div>
                   )}
+                </div>
+
+                <div className="space-y-4">
+                  <Label className="text-sm font-bold text-natural-muted uppercase tracking-widest">Question Image Fit</Label>
+                  <div className="rounded-xl border border-natural-border bg-natural-bg/60 px-4 py-3">
+                    <p className="text-xs text-natural-muted">
+                      Auto mode keeps full image for most ratios and only fills when image ratio is close to the question frame.
+                    </p>
+                  </div>
+                  <select
+                    value={questionImageFit}
+                    onChange={(e) => updateForm({ theme: { ...currentForm.theme, questionImageFit: e.target.value as 'auto' | 'contain' | 'cover' } })}
+                    className="w-full h-10 rounded-xl border border-natural-border bg-white px-3 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/20"
+                  >
+                    <option value="auto">Auto (recommended)</option>
+                    <option value="contain">Contain (show full image)</option>
+                    <option value="cover">Cover (fill frame, may crop)</option>
+                  </select>
                 </div>
 
                 <div className="space-y-4">
@@ -1989,7 +2047,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   );
 };
 
-const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, removeQuestion, duplicateQuestion, accentColor, titleFont, bodyFont, isActiveDrag }: any) => {
+const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, removeQuestion, duplicateQuestion, accentColor, titleFont, bodyFont, questionImageFit, isActiveDrag }: any) => {
   const {
     attributes,
     listeners,
@@ -2007,6 +2065,16 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
   const [previewValue, setPreviewValue] = useState('');
   const [previewError, setPreviewError] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [questionImageRatio, setQuestionImageRatio] = useState<number | null>(null);
+
+  const getQuestionImageClassName = () => {
+    if (questionImageFit === 'contain') return 'h-full w-full object-contain';
+    if (questionImageFit === 'cover') return 'h-full w-full object-cover';
+    if (questionImageRatio !== null && questionImageRatio >= 2.8 && questionImageRatio <= 3.6) {
+      return 'h-full w-full object-cover';
+    }
+    return 'h-full w-full object-contain';
+  };
 
   const handlePreviewChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const val = e.target.value;
@@ -2270,8 +2338,20 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
 
           {question.image && (
             <div className="space-y-3">
-              <div className="overflow-hidden rounded-2xl border border-natural-border bg-natural-bg">
-                <img src={question.image} alt={question.title || 'Question image'} className="h-56 w-full object-cover" />
+              <div className="overflow-hidden rounded-2xl border border-natural-border bg-natural-bg p-2">
+                <div className="w-full h-56 rounded-xl bg-white/70 flex items-center justify-center overflow-hidden">
+                  <img
+                    src={question.image}
+                    alt={question.title || 'Question image'}
+                    className={getQuestionImageClassName()}
+                    onLoad={(event) => {
+                      const { naturalWidth, naturalHeight } = event.currentTarget;
+                      if (naturalWidth > 0 && naturalHeight > 0) {
+                        setQuestionImageRatio(naturalWidth / naturalHeight);
+                      }
+                    }}
+                  />
+                </div>
               </div>
               <button type="button" onClick={() => updateQuestion(question.id, { image: undefined })} className="text-sm font-medium text-destructive hover:underline">
                 Remove question image
@@ -2403,7 +2483,7 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                   </div>
                   {question.optionImages?.[index] && (
                     <div className="ml-9 w-32 h-32 rounded-xl border border-natural-border relative group/image">
-                      <img src={question.optionImages[index]} alt={`Option ${index + 1}`} className="w-full h-full object-cover rounded-xl" />
+                      <img src={question.optionImages[index]} alt={`Option ${index + 1}`} className="w-full h-full object-contain rounded-xl bg-white/80 p-1" />
                       <button 
                         type="button"
                         aria-label={`Remove image for option ${index + 1}`}
@@ -2570,14 +2650,45 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
           )}
 
           <AnimatePresence initial={false}>
-            {showSettings && !isSectionQuestion && (
+            {showSettings && (
               <motion.div
+                id="advanced-settings-panel"
                 initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.2, ease: 'easeOut' }}
                 className="mt-6 p-6 rounded-2xl bg-natural-accent/30 border border-natural-border space-y-8"
               >
+              {isSectionQuestion ? (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-natural-primary">
+                    <SeparatorHorizontal className="h-4 w-4" />
+                    Section flow behavior
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-natural-border space-y-3">
+                    <label className="text-xs font-medium text-natural-muted">After this section, go to</label>
+                    <select
+                      className="w-full h-10 rounded-lg border border-natural-border bg-white px-3 text-sm text-natural-text focus:outline-none focus:ring-2 focus:ring-natural-primary/20"
+                      value={question.branchToSectionId || ''}
+                      onChange={(e) => updateQuestion(question.id, { branchToSectionId: e.target.value || undefined })}
+                    >
+                      <option value="">Continue to next section</option>
+                      <option value="__submit__">Submit form</option>
+                      {sectionTargets.map((section) => (
+                        <option key={section.id} value={section.id}>{section.title}</option>
+                      ))}
+                    </select>
+                    {directTargetWarning ? (
+                      <p className="text-xs font-medium text-amber-700">{directTargetWarning}</p>
+                    ) : (
+                      <p className="text-xs text-natural-muted">
+                        This route is used when no question-level branch in this section overrides it.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <>
               {['number', 'date', 'time', 'short_answer', 'paragraph', 'email', 'checkbox'].includes(question.type) && (
                 <div className="space-y-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-natural-primary">
@@ -3001,6 +3112,8 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                   </div>
                 )}
               </div>
+              </>
+              )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -3023,8 +3136,8 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
             
             <button type="button" aria-label="Duplicate question" onClick={() => duplicateQuestion(question.id)} className="hover:text-natural-primary transition-colors hover:bg-natural-accent p-2 rounded-lg" title="Duplicate"><Copy className="h-5 w-5" /></button>
             <button type="button" aria-label="Delete question" className="hover:text-destructive transition-colors hover:bg-destructive/10 p-2 rounded-lg" title="Delete" onClick={() => removeQuestion(question.id)}><Trash2 className="h-5 w-5" /></button>
-            <div className="h-6 w-[1px] bg-natural-border"></div>
-            <div className="flex items-center gap-3">
+            {!isSectionQuestion && <div className="h-6 w-[1px] bg-natural-border"></div>}
+            {!isSectionQuestion && <div className="flex items-center gap-3">
               <span className="text-[11px] font-bold uppercase tracking-widest flex items-center gap-1">
                 Required
                 <Tooltip>
@@ -3038,7 +3151,7 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                 checked={question.required} 
                 onCheckedChange={(checked) => updateQuestion(question.id, { required: checked })}
               />
-            </div>
+            </div>}
           </div>
         </div>
       </div>

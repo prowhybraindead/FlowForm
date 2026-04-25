@@ -154,6 +154,10 @@ drop policy if exists "users can create own profile" on public.profiles;
 drop policy if exists "users can update own profile" on public.profiles;
 drop policy if exists "owners can manage collaborators" on public.form_collaborators;
 drop policy if exists "collaborators can read own role" on public.form_collaborators;
+drop policy if exists "owners can read collaborators" on public.form_collaborators;
+drop policy if exists "owners can insert collaborators" on public.form_collaborators;
+drop policy if exists "owners can update collaborators" on public.form_collaborators;
+drop policy if exists "owners can delete collaborators" on public.form_collaborators;
 drop policy if exists "authorized users can read form audit logs" on public.form_audit_logs;
 
 create policy "public can read profiles"
@@ -195,30 +199,45 @@ create policy "collaborators can read form responses"
     )
   );
 
-create policy "owners can manage collaborators"
-  on public.form_collaborators for all
-  to authenticated
-  using (
-    exists (
-      select 1
-      from public.forms
-      where forms.id = form_collaborators.form_id
-        and forms.creator_id = auth.uid()
-    )
-  )
-  with check (
-    exists (
-      select 1
-      from public.forms
-      where forms.id = form_collaborators.form_id
-        and forms.creator_id = auth.uid()
-    )
+create or replace function public.is_form_owner(target_form_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.forms
+    where id = target_form_id
+      and creator_id = auth.uid()
   );
+$$;
 
-create policy "collaborators can read own role"
+grant execute on function public.is_form_owner(uuid) to authenticated;
+
+create policy "owners can read collaborators"
   on public.form_collaborators for select
   to authenticated
-  using (user_id = auth.uid());
+  using (
+    user_id = auth.uid()
+    or public.is_form_owner(form_id)
+  );
+
+create policy "owners can insert collaborators"
+  on public.form_collaborators for insert
+  to authenticated
+  with check (public.is_form_owner(form_id));
+
+create policy "owners can update collaborators"
+  on public.form_collaborators for update
+  to authenticated
+  using (public.is_form_owner(form_id))
+  with check (public.is_form_owner(form_id));
+
+create policy "owners can delete collaborators"
+  on public.form_collaborators for delete
+  to authenticated
+  using (public.is_form_owner(form_id));
 
 create policy "authorized users can read form audit logs"
   on public.form_audit_logs for select

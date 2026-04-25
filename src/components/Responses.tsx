@@ -93,12 +93,13 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
       };
     }
 
-    const sections: Array<{ id: string; title: string; questions: Form['questions']; isDefault: boolean }> = [];
+    const sections: Array<{ id: string; title: string; questions: Form['questions']; isDefault: boolean; branchToSectionId?: string | '__submit__' }> = [];
     let currentSection = {
       id: '__default__',
       title: form.title || 'Form start',
       questions: [] as Form['questions'],
       isDefault: true,
+      branchToSectionId: undefined as string | '__submit__' | undefined,
     };
     let sawSectionMarker = false;
 
@@ -112,6 +113,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
           title: question.title || 'Untitled section',
           questions: [],
           isDefault: false,
+          branchToSectionId: question.branchToSectionId,
         };
         sections.push(currentSection);
         sawSectionMarker = true;
@@ -231,6 +233,18 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
         if (targetId && sectionIndexMap.has(targetId)) {
           recordTransition(section.id, targetId);
           currentIndex = sectionIndexMap.get(targetId)!;
+          continue;
+        }
+
+        const fallbackTarget = section.branchToSectionId || '';
+        if (fallbackTarget === '__submit__') {
+          recordTransition(section.id, '__submit__');
+          outcome = 'submitted';
+          break;
+        }
+        if (fallbackTarget && sectionIndexMap.has(fallbackTarget)) {
+          recordTransition(section.id, fallbackTarget);
+          currentIndex = sectionIndexMap.get(fallbackTarget)!;
           continue;
         }
 

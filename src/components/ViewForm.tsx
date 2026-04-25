@@ -48,6 +48,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
   const [showConfirmSubmit, setShowConfirmSubmit] = useState(false);
   const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
   const [tempStorageClosed, setTempStorageClosed] = useState(false);
+  const [questionImageRatioById, setQuestionImageRatioById] = useState<Record<string, number>>({});
   const startTime = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -368,13 +369,14 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
   const formSections = useMemo(() => {
     if (!form) return [];
 
-    const sections: Array<{ id: string; title: string; description?: string; questions: any[]; isDefault: boolean }> = [];
+    const sections: Array<{ id: string; title: string; description?: string; questions: any[]; isDefault: boolean; branchToSectionId?: string | '__submit__' }> = [];
     let currentSection = {
       id: '__default__',
       title: form.title,
       description: form.description,
       questions: [] as any[],
       isDefault: true,
+      branchToSectionId: undefined as string | '__submit__' | undefined,
     };
     let sawSectionMarker = false;
 
@@ -390,6 +392,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           description: question.description,
           questions: [],
           isDefault: false,
+          branchToSectionId: question.branchToSectionId,
         };
         sections.push(currentSection);
         sawSectionMarker = true;
@@ -444,6 +447,17 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     }
 
     const nextIndex = currentSectionIndex + 1;
+    const sectionLevelTarget = activeSection.branchToSectionId || '';
+    if (sectionLevelTarget) {
+      if (sectionLevelTarget === '__submit__') {
+        return '__submit__';
+      }
+      const targetIndex = formSections.findIndex((section) => section.id === sectionLevelTarget);
+      if (targetIndex > currentSectionIndex) {
+        return targetIndex;
+      }
+    }
+
     return nextIndex < formSections.length ? nextIndex : null;
   };
 
@@ -568,6 +582,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         : ''
     }`;
   const headerImageFit = form.theme?.headerImageFit || 'contain';
+  const questionImageFit = form.theme?.questionImageFit || 'auto';
   const headerImagePosition = form.theme?.headerImagePosition || 'center';
   const headerImageObjectPosition =
     headerImagePosition === 'top'
@@ -579,6 +594,16 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           : headerImagePosition === 'right'
             ? 'center right'
             : 'center center';
+
+  const getQuestionImageClassName = (questionId: string) => {
+    if (questionImageFit === 'contain') return 'w-full h-full object-contain';
+    if (questionImageFit === 'cover') return 'w-full h-full object-cover';
+    const ratio = questionImageRatioById[questionId];
+    if (ratio !== undefined && ratio >= 2.8 && ratio <= 3.6) {
+      return 'w-full h-full object-cover';
+    }
+    return 'w-full h-full object-contain';
+  };
 
   return (
     <div className="bg-natural-bg min-h-screen py-16 px-6 relative grid-ambient" style={{ backgroundColor: form.theme?.backgroundColor || undefined }}>
@@ -602,7 +627,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className={`max-w-[720px] mx-auto space-y-10 ${form.settings?.showProgressBar ? 'mt-8' : ''}`} style={{ fontFamily: form.theme?.bodyFont || 'var(--font-sans)' }}>
+      <form noValidate onSubmit={handleSubmit} className={`max-w-[720px] mx-auto space-y-10 ${form.settings?.showProgressBar ? 'mt-8' : ''}`} style={{ fontFamily: form.theme?.bodyFont || 'var(--font-sans)' }}>
         {isPreview && (
           <div className="bg-natural-primary text-white px-6 py-3 rounded-full text-xs font-bold uppercase tracking-widest mb-6 flex justify-center shadow-lg border border-natural-primary-hover" style={{ backgroundColor: form.theme?.accentColor || undefined }}>
             Previewing Form Structure
@@ -712,7 +737,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
             <div className="space-y-3">
               <p className="text-[10px] font-bold uppercase tracking-widest text-natural-muted">Section</p>
               <h2 className="text-2xl font-serif text-natural-text" style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}>{activeSection.title}</h2>
-              {activeSection.description && <p className="text-natural-muted leading-relaxed">{activeSection.description}</p>}
+              {activeSection.description && <p className="text-natural-muted leading-relaxed whitespace-pre-line">{activeSection.description}</p>}
             </div>
             </motion.div>
           )}
@@ -729,8 +754,23 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           >
             <div className="space-y-6">
               {question.image && (
-                <div className="overflow-hidden rounded-[24px] border border-natural-border">
-                  <img src={question.image} alt={question.title} className="w-full h-56 object-cover" />
+                <div className="overflow-hidden rounded-[24px] border border-natural-border bg-natural-bg p-2">
+                  <div className="w-full h-56 rounded-[18px] bg-white/70 flex items-center justify-center overflow-hidden">
+                    <img
+                      src={question.image}
+                      alt={question.title}
+                      className={getQuestionImageClassName(question.id)}
+                      onLoad={(event) => {
+                        const { naturalWidth, naturalHeight } = event.currentTarget;
+                        if (naturalWidth > 0 && naturalHeight > 0) {
+                          const ratio = naturalWidth / naturalHeight;
+                          setQuestionImageRatioById((prev) => (
+                            prev[question.id] === ratio ? prev : { ...prev, [question.id]: ratio }
+                          ));
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
               )}
               <div className="space-y-2">
@@ -738,7 +778,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                   {question.title} 
                   {question.required && <span className="text-destructive ml-2">*</span>}
                 </Label>
-                {question.description && <p className="text-natural-muted leading-relaxed font-light">{question.description}</p>}
+                {question.description && <p className="text-natural-muted leading-relaxed font-light whitespace-pre-line">{question.description}</p>}
               </div>
 
               <div className="pt-2">
@@ -857,7 +897,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                           </div>
                           {question.optionImages?.[i] && (
                             <div className="ml-10 max-w-[400px] overflow-hidden rounded-xl border border-natural-border">
-                              <img src={question.optionImages[i]} alt={option} className="w-full h-auto object-cover" />
+                              <img src={question.optionImages[i]} alt={option} className="w-full h-auto max-h-80 object-contain bg-white/80 p-1" />
                             </div>
                           )}
                         </div>
@@ -976,7 +1016,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                           </div>
                           {question.optionImages?.[i] && (
                             <div className="ml-10 max-w-[400px] overflow-hidden rounded-xl border border-natural-border">
-                              <img src={question.optionImages[i]} alt={option} className="w-full h-auto object-cover" />
+                              <img src={question.optionImages[i]} alt={option} className="w-full h-auto max-h-80 object-contain bg-white/80 p-1" />
                             </div>
                           )}
                         </div>
@@ -1233,11 +1273,20 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
               form?.questions.filter(isQuestionVisible).map(q => {
                 const ans = answers[q.id];
                 if (!ans || (Array.isArray(ans) && ans.length === 0)) return null;
+                const formattedAnswer = Array.isArray(ans) ? ans.join('\n') : String(ans);
+
                 return (
                   <div key={q.id} className="border-b border-natural-border/50 pb-3 last:border-0 last:pb-0">
-                    <h4 className="font-medium text-sm text-natural-text mb-1">{q.title || 'Untitled Question'}</h4>
+                    <h4 className="font-medium text-sm text-natural-text mb-1 whitespace-pre-line break-words">
+                      {q.title || 'Untitled Question'}
+                    </h4>
+                    {q.description && (
+                      <p className="text-xs text-natural-muted whitespace-pre-line break-words mb-1">
+                        {q.description}
+                      </p>
+                    )}
                     <div className="text-sm text-natural-primary whitespace-pre-wrap break-words font-light">
-                      {Array.isArray(ans) ? ans.join(', ') : ans.toString()}
+                      {formattedAnswer}
                     </div>
                   </div>
                 );

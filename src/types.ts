@@ -73,6 +73,7 @@ export interface Form {
     headerImage?: string;
     headerImageFit?: 'contain' | 'cover';
     headerImagePosition?: 'center' | 'top' | 'bottom' | 'left' | 'right';
+    questionImageFit?: 'auto' | 'contain' | 'cover';
     backgroundColor?: string;
     titleFont?: string;
     bodyFont?: string;
