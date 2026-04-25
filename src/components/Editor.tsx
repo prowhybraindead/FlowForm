@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+'use client';
+
+import React, { useEffect, useRef, useState } from 'react';
 import { useFormStore } from '../store/useFormStore';
 import { Question, QuestionType } from '../types';
+import { getFormRecord, updateFormRecord } from '../lib/formsApi';
+import { uploadImageAsset } from '../lib/imageUpload';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent } from './ui/card';
@@ -158,6 +160,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   const [autoSaving, setAutoSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [domainError, setDomainError] = useState('');
+  const lastSyncedClosedState = useRef<boolean | null>(null);
   
   const [historyOpen, setHistoryOpen] = useState(false);
   const [newVersionName, setNewVersionName] = useState('');
@@ -183,10 +186,8 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   useEffect(() => {
     const fetchForm = async () => {
       try {
-        const docRef = doc(db, 'forms', formId);
-        const snapshot = await getDoc(docRef);
-        if (snapshot.exists()) {
-          const remoteForm = { id: snapshot.id, ...snapshot.data() } as any;
+        const remoteForm = await getFormRecord(formId);
+        if (remoteForm) {
           
           // Check for local draft
           const draftKey = `form_draft_${formId}`;
@@ -254,9 +255,8 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     const timeout = setTimeout(async () => {
       setAutoSaving(true);
       try {
-        const docRef = doc(db, 'forms', formId);
         const now = Date.now();
-        await updateDoc(docRef, {
+        await updateFormRecord(formId, {
           ...currentForm,
           updatedAt: now,
         });
@@ -273,12 +273,31 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     return () => clearTimeout(timeout);
   }, [currentForm, formId]);
 
+  const isClosedForResponses = currentForm?.settings?.publishImmediately === false;
+
+  useEffect(() => {
+    if (!currentForm) return;
+    if (process.env.NEXT_PUBLIC_ENABLE_TEMP_STORAGE_UPLOADS !== 'true') return;
+    if (lastSyncedClosedState.current === isClosedForResponses) return;
+
+    lastSyncedClosedState.current = isClosedForResponses;
+    fetch('/api/temp-storage/form-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        formId,
+        isClosed: isClosedForResponses,
+      }),
+    }).catch((error) => {
+      console.error('Failed to sync form status with temp storage:', error);
+    });
+  }, [currentForm, formId, isClosedForResponses]);
+
   const saveForm = async () => {
     if (!currentForm) return;
     setSaving(true);
     try {
-      const docRef = doc(db, 'forms', formId);
-      await updateDoc(docRef, {
+      await updateFormRecord(formId, {
         ...currentForm,
         updatedAt: Date.now(),
       });
@@ -307,8 +326,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
       
       const updatedVersions = [...(currentForm.versions || []), newVersion];
       
-      const docRef = doc(db, 'forms', formId);
-      await updateDoc(docRef, {
+      await updateFormRecord(formId, {
         versions: updatedVersions,
         updatedAt: Date.now(),
       });
@@ -329,8 +347,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     if (!confirm('Are you sure you want to restore this version? Unsaved changes will be lost.')) return;
     
     try {
-      const docRef = doc(db, 'forms', formId);
-      await updateDoc(docRef, {
+      await updateFormRecord(formId, {
         ...version.data,
         updatedAt: Date.now(),
       });
@@ -370,35 +387,39 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.size > 2 * 1024 * 1024) {
         toast.error('Image size must be less than 2MB');
         return;
       }
-      
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        updateForm({ theme: { ...currentForm?.theme, headerImage: reader.result as string } });
-      };
-      reader.readAsDataURL(file);
+
+      try {
+        const imageUrl = await uploadImageAsset(file, { formId });
+        updateForm({ theme: { ...currentForm?.theme, headerImage: imageUrl } });
+      } catch (error) {
+        console.error('Header image upload failed:', error);
+        toast.error('Failed to upload header image');
+      }
     }
   };
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.size > 2 * 1024 * 1024) {
         toast.error('Image size must be less than 2MB');
         return;
       }
-      
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        updateForm({ theme: { ...currentForm?.theme, logo: reader.result as string } });
-      };
-      reader.readAsDataURL(file);
+
+      try {
+        const imageUrl = await uploadImageAsset(file, { formId });
+        updateForm({ theme: { ...currentForm?.theme, logo: imageUrl } });
+      } catch (error) {
+        console.error('Logo upload failed:', error);
+        toast.error('Failed to upload logo image');
+      }
     }
   };
 
@@ -609,10 +630,10 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
               <SortableContext 
                 items={currentForm.questions.map(q => q.id)}
                 strategy={verticalListSortingStrategy}
-              >
-                {currentForm.questions.map((question) => (
+                children={currentForm.questions.map((question) => (
                   <SortableQuestionItem 
                     key={question.id} 
+                    formId={formId}
                     question={question}
                     allQuestions={currentForm.questions}
                     updateQuestion={updateQuestion}
@@ -623,7 +644,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                     bodyFont={currentForm.theme?.bodyFont}
                   />
                 ))}
-              </SortableContext>
+              />
             </DndContext>
 
             <div className="flex justify-center pt-8">
@@ -1040,7 +1061,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   );
 };
 
-const SortableQuestionItem = ({ question, allQuestions, updateQuestion, removeQuestion, duplicateQuestion, accentColor, titleFont, bodyFont }: any) => {
+const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, removeQuestion, duplicateQuestion, accentColor, titleFont, bodyFont }: any) => {
   const {
     attributes,
     listeners,
@@ -1272,18 +1293,21 @@ const SortableQuestionItem = ({ question, allQuestions, updateQuestion, removeQu
                           aria-label={`Upload image for option ${index + 1}`}
                           type="file" 
                           accept="image/*" 
-                          onChange={(e) => {
+                          onChange={async (e) => {
                             const file = e.target.files?.[0];
                             if (file) {
                               if (file.size > 2 * 1024 * 1024) {
                                 toast.error('Image size must be less than 2MB');
                                 return;
                               }
-                              const reader = new FileReader();
-                              reader.onloadend = () => {
-                                updateOptionImage(index, reader.result as string);
-                              };
-                              reader.readAsDataURL(file);
+
+                              try {
+                                const imageUrl = await uploadImageAsset(file, { formId });
+                                updateOptionImage(index, imageUrl);
+                              } catch (error) {
+                                console.error('Option image upload failed:', error);
+                                toast.error('Failed to upload option image');
+                              }
                             }
                           }} 
                           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
@@ -1398,10 +1422,12 @@ const SortableQuestionItem = ({ question, allQuestions, updateQuestion, removeQu
                   )}
                 </div>
                 <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button type="button" className="text-natural-muted hover:text-natural-primary transition-colors flex-shrink-0 cursor-help" aria-label="Email format information">
+                  <TooltipTrigger
+                    render={
+                      <button type="button" className="text-natural-muted hover:text-natural-primary transition-colors flex-shrink-0 cursor-help" aria-label="Email format information" />
+                    }
+                  >
                       <Info className="h-5 w-5" />
-                    </button>
                   </TooltipTrigger>
                   <TooltipContent side="right">
                     <p className="text-sm">Must be a valid email address format (e.g., name@example.com).</p>

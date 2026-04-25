@@ -1,7 +1,9 @@
+'use client';
+
 import React, { useEffect, useState, useRef } from 'react';
-import { doc, getDoc, addDoc, collection, updateDoc, increment } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { Form, Response } from '../types';
+import { createResponseRecord, getFormRecord, incrementFormViews } from '../lib/formsApi';
+import { uploadImageAsset } from '../lib/imageUpload';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -35,16 +37,13 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
   useEffect(() => {
     const fetchForm = async () => {
       try {
-        const docRef = doc(db, 'forms', formId);
-        const snapshot = await getDoc(docRef);
-        if (snapshot.exists()) {
-          setForm({ id: snapshot.id, ...snapshot.data() } as Form);
+        const fetchedForm = await getFormRecord(formId);
+        if (fetchedForm) {
+          setForm(fetchedForm);
           
           if (!isPreview) {
             try {
-              await updateDoc(docRef, {
-                views: increment(1)
-              });
+              await incrementFormViews(formId);
             } catch (e) {
               console.error('Error updating view count:', e);
             }
@@ -118,7 +117,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
     try {
-      await addDoc(collection(db, 'forms', formId, 'responses'), {
+      await createResponseRecord({
         formId,
         submittedAt: Date.now(),
         answers,
@@ -663,7 +662,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                       aria-label={question.title}
                       id={`image_upload_${question.id}`}
                       className="hidden"
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                      onChange={async (e: React.ChangeEvent<HTMLInputElement>) => {
                         const files = Array.from(e.target.files || []) as File[];
                         const currentImages = Array.isArray(answers[question.id]) ? answers[question.id] : [];
                         
@@ -684,20 +683,15 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                            });
                         }
 
-                        let loadedImages: string[] = [];
-                        let loadedCount = 0;
-
-                        validFiles.forEach((file, index) => {
-                          const reader = new FileReader();
-                          reader.onloadend = () => {
-                            loadedImages[index] = reader.result as string;
-                            loadedCount++;
-                            if (loadedCount === validFiles.length) {
-                               updateAnswer(question, [...currentImages, ...loadedImages]);
-                            }
-                          };
-                          reader.readAsDataURL(file);
-                        });
+                        try {
+                          const uploadedImages = await Promise.all(
+                            validFiles.map((file) => uploadImageAsset(file, { formId }))
+                          );
+                          updateAnswer(question, [...currentImages, ...uploadedImages]);
+                        } catch (error) {
+                          console.error('Response image upload failed:', error);
+                          setErrors(prev => ({ ...prev, [question.id]: 'Failed to upload one or more images' }));
+                        }
                       }}
                     />
                     <div className="flex flex-col gap-4">

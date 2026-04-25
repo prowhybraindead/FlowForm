@@ -1,8 +1,9 @@
+'use client';
+
 import React, { useEffect, useState, useMemo } from 'react';
-import { collection, query, where, getDocs, addDoc, serverTimestamp, orderBy, deleteDoc, doc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuthStore } from '../store/useAuthStore';
 import { Form } from '../types';
+import { createFormRecord, deleteFormRecord, listFormsByCreator } from '../lib/formsApi';
 import { Card, CardHeader, CardTitle, CardDescription, CardFooter } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -111,17 +112,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
     const fetchForms = async () => {
       if (!user) return;
       try {
-        const q = query(
-          collection(db, 'forms'),
-          where('creatorId', '==', user.uid),
-          orderBy('updatedAt', 'desc')
-        );
-        const snapshot = await getDocs(q);
-        const fetchedForms = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Form[];
-        setForms(fetchedForms);
+        setForms(await listFormsByCreator(user.uid));
       } catch (error) {
         console.error('Error fetching forms:', error);
       } finally {
@@ -144,8 +135,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
     };
 
     try {
-      const docRef = await addDoc(collection(db, 'forms'), newForm);
-      onEdit(docRef.id);
+      const createdForm = await createFormRecord(newForm);
+      onEdit(createdForm.id);
     } catch (error) {
       console.error('Error creating form:', error);
     }
@@ -156,7 +147,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
     if (confirm('Are you sure you want to delete this form?')) {
       setForms(prev => prev.filter(f => f.id !== id));
       try {
-        await deleteDoc(doc(db, 'forms', id));
+        await deleteFormRecord(id);
       } catch (error) {
         console.error('Error deleting form:', error);
       }

@@ -1,7 +1,8 @@
+'use client';
+
 import React, { useEffect, useState } from 'react';
-import { collection, query, getDocs, doc, getDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { Form, Response } from '../types';
+import { getFormRecord, listResponsesForForm } from '../lib/formsApi';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
@@ -26,18 +27,9 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const formRef = doc(db, 'forms', formId);
-        const formSnap = await getDoc(formRef);
-        if (formSnap.exists()) {
-          setForm({ id: formSnap.id, ...formSnap.data() } as Form);
-        }
+        setForm(await getFormRecord(formId));
 
-        const responsesSnapshot = await getDocs(collection(db, 'forms', formId, 'responses'));
-        const fetchedResponses = responsesSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Response[];
-        setResponses(fetchedResponses);
+        setResponses(await listResponsesForForm(formId));
       } catch (error) {
         console.error('Error fetching responses:', error);
       } finally {
@@ -65,12 +57,12 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
 
   const getWordFrequency = (questionId: string) => {
     const words: Record<string, number> = {};
-    const stopWords = new Set(['the', 'is', 'are', 'was', 'were', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know', 'take', 'people', 'into', 'year', 'your', 'good', 'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come', 'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'first', 'well', 'way', 'even', 'new', 'want', 'because', 'any', 'these', 'give', 'day', 'most', 'us']);
+    const stopWords = new Set<string>(['the', 'is', 'are', 'was', 'were', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know', 'take', 'people', 'into', 'year', 'your', 'good', 'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come', 'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'first', 'well', 'way', 'even', 'new', 'want', 'because', 'any', 'these', 'give', 'day', 'most', 'us']);
     
     responses.forEach(r => {
       const answer = r.answers[questionId];
       if (typeof answer === 'string') {
-        const tokens = answer.toLowerCase().match(/\b[a-z']+\b/g) || [];
+        const tokens: string[] = answer.toLowerCase().match(/\b[a-z']+\b/g) ?? [];
         tokens.forEach(token => {
           if (!stopWords.has(token) && token.length > 2) {
             words[token] = (words[token] || 0) + 1;
