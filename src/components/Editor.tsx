@@ -157,6 +157,41 @@ const QUESTION_TYPES: { type: QuestionType, label: string, icon: any }[] = [
   { type: 'image_upload', label: 'Image Upload', icon: ImageIcon },
 ];
 
+const isInlineImageDataUrl = (value?: string) =>
+  Boolean(value && value.startsWith('data:image/'));
+
+const buildStorageSafeDraft = (form: any) => {
+  const safeQuestions = (form.questions || []).map((question: any) => {
+    const nextQuestion = { ...question };
+
+    if (isInlineImageDataUrl(nextQuestion.image)) {
+      nextQuestion.image = '';
+    }
+
+    if (Array.isArray(nextQuestion.optionImages)) {
+      nextQuestion.optionImages = nextQuestion.optionImages.map((image: string) =>
+        isInlineImageDataUrl(image) ? '' : image
+      );
+    }
+
+    return nextQuestion;
+  });
+
+  const safeTheme = { ...(form.theme || {}) };
+  if (isInlineImageDataUrl(safeTheme.headerImage)) {
+    safeTheme.headerImage = '';
+  }
+  if (isInlineImageDataUrl(safeTheme.logo)) {
+    safeTheme.logo = '';
+  }
+
+  return {
+    ...form,
+    questions: safeQuestions,
+    theme: safeTheme,
+  };
+};
+
 const FONT_OPTIONS = [
   { label: 'System Default (Inter)', value: 'var(--font-sans)', name: 'sans' },
   { label: 'Serif (Playfair Display)', value: 'var(--font-serif)', name: 'serif' },
@@ -214,6 +249,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<Exclude<CollaboratorRole, 'owner'>>('editor');
   const [inviting, setInviting] = useState(false);
+  const didWarnStorageQuota = useRef(false);
 
   const canManageCollaborators = accessRole === 'owner';
   const canEditForm = accessRole === 'owner' || accessRole === 'editor';
@@ -273,19 +309,24 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           // Check for local draft
           const draftKey = `form_draft_${formId}`;
           const localDraft = localStorage.getItem(draftKey);
-          
+
           if (localDraft) {
-            const parsedDraft = JSON.parse(localDraft);
-            // Only suggest if draft is newer than remote
-            if (parsedDraft.updatedAt > (remoteForm.updatedAt || 0)) {
-              const recover = confirm('We found an unsaved draft of this form. Would you like to recover it?');
-              if (recover) {
-                setCurrentForm(parsedDraft);
-                setLastSavedAt(new Date(parsedDraft.updatedAt));
-                return;
-              } else {
-                localStorage.removeItem(draftKey);
+            try {
+              const parsedDraft = JSON.parse(localDraft);
+              // Only suggest if draft is newer than remote
+              if (parsedDraft.updatedAt > (remoteForm.updatedAt || 0)) {
+                const recover = confirm('We found an unsaved draft of this form. Would you like to recover it?');
+                if (recover) {
+                  setCurrentForm(parsedDraft);
+                  setLastSavedAt(new Date(parsedDraft.updatedAt));
+                  return;
+                } else {
+                  localStorage.removeItem(draftKey);
+                }
               }
+            } catch (parseError) {
+              console.error('Invalid local draft JSON. Clearing corrupted draft.', parseError);
+              localStorage.removeItem(draftKey);
             }
           }
           
@@ -331,12 +372,44 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
   useEffect(() => {
     if (!currentForm || !canEditForm) return;
 
-    // Save to local storage immediately on change
+    // Save to local storage immediately on change, with quota-safe fallback.
     const draftKey = `form_draft_${formId}`;
-    localStorage.setItem(draftKey, JSON.stringify({
+    const now = Date.now();
+    const fullDraft = JSON.stringify({
       ...currentForm,
-      updatedAt: Date.now()
-    }));
+      updatedAt: now,
+    });
+
+    try {
+      localStorage.setItem(draftKey, fullDraft);
+    } catch (error) {
+      const isQuotaExceeded =
+        error instanceof DOMException &&
+        (error.name === 'QuotaExceededError' || error.code === 22 || error.code === 1014);
+
+      if (!isQuotaExceeded) {
+        console.error('Unexpected localStorage error while saving draft:', error);
+        return;
+      }
+
+      try {
+        const fallbackDraft = JSON.stringify({
+          ...buildStorageSafeDraft(currentForm),
+          updatedAt: now,
+        });
+        localStorage.setItem(draftKey, fallbackDraft);
+        if (!didWarnStorageQuota.current) {
+          didWarnStorageQuota.current = true;
+          toast.warning('Draft backup is now image-light to avoid browser storage limits.');
+        }
+      } catch (fallbackError) {
+        console.error('Unable to save local draft due to storage limits:', fallbackError);
+        if (!didWarnStorageQuota.current) {
+          didWarnStorageQuota.current = true;
+          toast.error('Local draft backup is full. Please save now to avoid losing recent edits.');
+        }
+      }
+    }
 
     // Debounced save to Firebase
     const timeout = setTimeout(async () => {
