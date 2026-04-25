@@ -552,20 +552,22 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
 
         <TabsContent value="questions" className="mt-0 outline-none relative">
           
-          <div className="w-full bg-white/80 backdrop-blur border-b border-natural-border px-6 py-4 shadow-sm sticky top-[64px] z-30">
-            <div className="max-w-[720px] mx-auto">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-xs font-bold uppercase tracking-widest text-natural-muted">Progress Bar Preview (50% Answered)</span>
-                <span className="text-sm font-medium" style={{ color: currentForm.theme?.accentColor || 'var(--color-natural-primary)' }}>50%</span>
-              </div>
-              <div className="w-full h-2 bg-natural-border rounded-full overflow-hidden">
-                <div 
-                  className="h-full transition-all duration-500 ease-out w-1/2" 
-                  style={{ backgroundColor: currentForm.theme?.accentColor || 'var(--color-natural-primary)' }}
-                />
+          {currentForm.settings?.showProgressBar && (
+            <div className="w-full bg-white/80 backdrop-blur border-b border-natural-border px-6 py-4 shadow-sm sticky top-[64px] z-30">
+              <div className="max-w-[720px] mx-auto">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-xs font-bold uppercase tracking-widest text-natural-muted">Progress Bar Preview (50% Answered)</span>
+                  <span className="text-sm font-medium" style={{ color: currentForm.theme?.accentColor || 'var(--color-natural-primary)' }}>50%</span>
+                </div>
+                <div className="w-full h-2 bg-natural-border rounded-full overflow-hidden">
+                  <div 
+                    className="h-full transition-all duration-500 ease-out w-1/2" 
+                    style={{ backgroundColor: currentForm.theme?.accentColor || 'var(--color-natural-primary)' }}
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           <div className="max-w-[720px] mx-auto py-12 px-6 space-y-8">
             {currentForm.theme?.headerImage && (
@@ -795,6 +797,27 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
               <h2 className="text-2xl font-serif mb-8 text-natural-text">Form Settings</h2>
               
               <div className="space-y-8">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label className="text-base font-medium text-natural-text flex items-center gap-2">
+                      Show progress bar
+                      <Tooltip>
+                        <TooltipTrigger type="button" className="cursor-help">
+                          <Info className="h-4 w-4 text-natural-muted hover:text-natural-primary transition-colors" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Display a visual progress bar indicating the percentage of answered questions.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </Label>
+                    <p className="text-sm text-natural-muted">Respondents will see a progress bar at the top of the form.</p>
+                  </div>
+                  <Switch 
+                    checked={currentForm.settings?.showProgressBar || false}
+                    onCheckedChange={(checked) => updateForm({ settings: { ...currentForm.settings, showProgressBar: checked } })}
+                  />
+                </div>
+
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
                     <Label className="text-base font-medium text-natural-text flex items-center gap-2">

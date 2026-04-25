@@ -61,6 +61,7 @@ export interface Form {
     expirationDate?: string;
     thankYouMessage?: string;
     redirectUrlAfterSubmit?: string;
+    showProgressBar?: boolean;
   };
   theme?: {
     accentColor?: string;

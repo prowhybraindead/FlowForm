@@ -350,7 +350,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
       <div className="fixed top-4 right-4 z-50">
         <DarkModeToggle className="bg-white/50 backdrop-blur" />
       </div>
-      {totalQuestions > 3 && (
+      {form.settings?.showProgressBar && (
         <div className="fixed top-0 left-0 w-full z-50 bg-white/80 backdrop-blur border-b border-natural-border px-6 py-4 shadow-sm">
           <div className="max-w-[680px] mx-auto">
             <div className="flex justify-between items-center mb-2">
@@ -370,7 +370,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className={`max-w-[680px] mx-auto space-y-10 ${totalQuestions > 3 ? 'mt-8' : ''}`} style={{ fontFamily: form.theme?.bodyFont || 'var(--font-sans)' }}>
+      <form onSubmit={handleSubmit} className={`max-w-[680px] mx-auto space-y-10 ${form.settings?.showProgressBar ? 'mt-8' : ''}`} style={{ fontFamily: form.theme?.bodyFont || 'var(--font-sans)' }}>
         {isPreview && (
           <div className="bg-natural-primary text-white px-6 py-3 rounded-full text-xs font-bold uppercase tracking-widest mb-6 flex justify-center shadow-lg border border-natural-primary-hover" style={{ backgroundColor: form.theme?.accentColor || undefined }}>
             Previewing Form Structure
