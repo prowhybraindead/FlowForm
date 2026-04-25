@@ -24,6 +24,8 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
   const [savingProfile, setSavingProfile] = useState(false);
 
   useEffect(() => {
+    let active = true;
+
     const setSessionUser = async (sessionUser: Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user']) => {
       if (sessionUser) {
         const fallbackName = sessionUser.user_metadata?.full_name ?? sessionUser.user_metadata?.name ?? sessionUser.email ?? null;
@@ -63,17 +65,47 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     };
 
-    supabase.auth.getUser().then(async ({ data }) => {
-      await setSessionUser(data.user);
-      setLoading(false);
+    const initializeAuth = async () => {
+      try {
+        const { data, error } = await supabase.auth.getUser();
+        if (error) throw error;
+        await setSessionUser(data.user);
+      } catch (error) {
+        console.error('Initial auth check failed:', error);
+        if (active) {
+          setUser(null);
+          setProfileName('');
+          setProfileAvatarUrl('');
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void initializeAuth();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      void (async () => {
+        try {
+          await setSessionUser(session?.user ?? null);
+        } catch (error) {
+          console.error('Auth state update failed:', error);
+        } finally {
+          if (active) setLoading(false);
+        }
+      })();
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      await setSessionUser(session?.user ?? null);
-      setLoading(false);
-    });
+    const failSafeTimer = window.setTimeout(() => {
+      if (active) {
+        setLoading(false);
+      }
+    }, 8000);
 
-    return () => listener.subscription.unsubscribe();
+    return () => {
+      active = false;
+      window.clearTimeout(failSafeTimer);
+      listener.subscription.unsubscribe();
+    };
   }, [setUser, setLoading]);
 
   const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
