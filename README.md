@@ -111,6 +111,9 @@ supabase/
   schema.sql
   migrations/
     202604260001_phase4_collaboration_audit_and_route_validation.sql
+    202604260002_fix_forms_update_policy_recursion.sql
+    202604260003_fix_forms_delete_policy.sql
+    202604260004_fix_form_delete_audit_fk_violation.sql
 ```
 
 ---
@@ -192,6 +195,12 @@ Key DB functions/triggers:
 - `resolve_user_id_by_email_for_form_owner`
 - `validate_form_routes` (trigger)
 - `write_form_audit_log` (trigger)
+
+Migration order for existing environments:
+1. `202604260001_phase4_collaboration_audit_and_route_validation.sql`
+2. `202604260002_fix_forms_update_policy_recursion.sql` (RLS recursion hotfix)
+3. `202604260003_fix_forms_delete_policy.sql` (ensure owner delete policy)
+4. `202604260004_fix_form_delete_audit_fk_violation.sql` (avoid delete-audit FK failure)
 
 ---
 
