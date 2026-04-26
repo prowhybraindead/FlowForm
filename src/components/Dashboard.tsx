@@ -10,6 +10,7 @@ import { Input } from './ui/input';
 import { Plus, FileText, BarChart2, MoreVertical, PartyPopper, MessageSquare, Briefcase, Search, Copy, ExternalLink, Trash2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu';
+import { toast } from 'sonner';
 
 interface DashboardProps {
   onEdit: (formId: string) => void;
@@ -87,6 +88,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
   const { user } = useAuthStore();
   const [forms, setForms] = useState<Form[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingFormId, setDeletingFormId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'title_asc' | 'title_desc'>('newest');
 
@@ -153,12 +155,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
 
   const handleDeleteForm = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    if (!user || deletingFormId === id) return;
     if (confirm('Are you sure you want to delete this form?')) {
-      setForms(prev => prev.filter(f => f.id !== id));
+      setDeletingFormId(id);
       try {
         await deleteFormRecord(id);
+        setForms(prev => prev.filter(f => f.id !== id));
+        toast.success('Form deleted successfully');
       } catch (error) {
         console.error('Error deleting form:', error);
+        toast.error(error instanceof Error ? error.message : 'Failed to delete form');
+      } finally {
+        setDeletingFormId(null);
       }
     }
   };
@@ -247,70 +255,78 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
               {filteredForms.map((form, index) => (
-            <motion.div
-              key={form.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-            >
-              <Card className="card-natural interactive-lift group h-full flex flex-col border-transparent hover:border-natural-primary/20 cursor-pointer">
-                <CardHeader className="p-8 pb-4">
-                  <div className="flex justify-between items-start mb-2">
-                    <CardTitle className="text-lg font-medium text-natural-primary line-clamp-1">{form.title}</CardTitle>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger className="p-2 rounded-full hover:bg-natural-accent transition-colors cursor-pointer inline-flex items-center justify-center" aria-label="Form actions" onClick={(e) => e.stopPropagation()}>
-                        <MoreVertical className="h-4 w-4 text-natural-muted" />
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-48 bg-natural-card border-natural-border shadow-md rounded-xl py-1">
-                        <DropdownMenuItem className="cursor-pointer hover:bg-natural-accent py-2 px-3 text-natural-text focus:bg-natural-accent" onClick={(e) => { e.stopPropagation(); onEdit(form.id); }}>
-                          <FileText className="mr-2 h-4 w-4 text-natural-muted" />
-                          Edit Form
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="cursor-pointer hover:bg-natural-accent py-2 px-3 text-natural-text focus:bg-natural-accent" onClick={(e) => { e.stopPropagation(); onViewResults(form.id); }}>
-                          <BarChart2 className="mr-2 h-4 w-4 text-natural-muted" />
-                          View Results
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="cursor-pointer hover:bg-natural-accent py-2 px-3 text-natural-text focus:bg-natural-accent" onClick={(e) => { e.stopPropagation(); window.open(`/f/${form.id}`, '_blank'); }}>
-                          <ExternalLink className="mr-2 h-4 w-4 text-natural-muted" />
-                          Preview Form
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator className="bg-natural-border" />
-                        <DropdownMenuItem className="cursor-pointer text-red-600 hover:bg-red-50 focus:bg-red-50 focus:text-red-700 py-2 px-3" onClick={(e) => handleDeleteForm(e, form.id)}>
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete Form
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  <CardDescription className="text-natural-muted leading-relaxed line-clamp-2">
-                    {form.description || 'No description provided'}
-                  </CardDescription>
-                </CardHeader>
-                <div className="mt-auto px-8 pb-8 pt-4">
-                  <div className="flex gap-3 pt-6 border-t border-natural-border">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="flex-1 rounded-full text-natural-muted hover:text-natural-primary hover:bg-natural-accent"
-                      onClick={() => onEdit(form.id)}
-                    >
-                      <FileText className="mr-2 h-4 w-4" />
-                      Edit
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="flex-1 rounded-full text-natural-muted hover:text-natural-primary hover:bg-natural-accent"
-                      onClick={() => onViewResults(form.id)}
-                    >
-                      <BarChart2 className="mr-2 h-4 w-4" />
-                      Results
-                    </Button>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-          ))}
+                <motion.div
+                  key={form.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                >
+                  <Card className="card-natural interactive-lift group h-full flex flex-col border-transparent hover:border-natural-primary/20 cursor-pointer">
+                    <CardHeader className="p-8 pb-4">
+                      <div className="flex justify-between items-start mb-2">
+                        <CardTitle className="text-lg font-medium text-natural-primary line-clamp-1">{form.title}</CardTitle>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger className="p-2 rounded-full hover:bg-natural-accent transition-colors cursor-pointer inline-flex items-center justify-center" aria-label="Form actions" onClick={(e) => e.stopPropagation()}>
+                            <MoreVertical className="h-4 w-4 text-natural-muted" />
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-48 bg-natural-card border-natural-border shadow-md rounded-xl py-1">
+                            <DropdownMenuItem className="cursor-pointer hover:bg-natural-accent py-2 px-3 text-natural-text focus:bg-natural-accent" onClick={(e) => { e.stopPropagation(); onEdit(form.id); }}>
+                              <FileText className="mr-2 h-4 w-4 text-natural-muted" />
+                              Edit Form
+                            </DropdownMenuItem>
+                            <DropdownMenuItem className="cursor-pointer hover:bg-natural-accent py-2 px-3 text-natural-text focus:bg-natural-accent" onClick={(e) => { e.stopPropagation(); onViewResults(form.id); }}>
+                              <BarChart2 className="mr-2 h-4 w-4 text-natural-muted" />
+                              View Results
+                            </DropdownMenuItem>
+                            <DropdownMenuItem className="cursor-pointer hover:bg-natural-accent py-2 px-3 text-natural-text focus:bg-natural-accent" onClick={(e) => { e.stopPropagation(); window.open(`/f/${form.id}`, '_blank'); }}>
+                              <ExternalLink className="mr-2 h-4 w-4 text-natural-muted" />
+                              Preview Form
+                            </DropdownMenuItem>
+                            {user?.uid === form.creatorId && (
+                              <>
+                                <DropdownMenuSeparator className="bg-natural-border" />
+                                <DropdownMenuItem
+                                  className="cursor-pointer text-red-600 hover:bg-red-50 focus:bg-red-50 focus:text-red-700 py-2 px-3"
+                                  disabled={deletingFormId === form.id}
+                                  onClick={(e) => handleDeleteForm(e, form.id)}
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  {deletingFormId === form.id ? 'Deleting...' : 'Delete Form'}
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                      <CardDescription className="text-natural-muted leading-relaxed line-clamp-2">
+                        {form.description || 'No description provided'}
+                      </CardDescription>
+                    </CardHeader>
+                    <div className="mt-auto px-8 pb-8 pt-4">
+                      <div className="flex gap-3 pt-6 border-t border-natural-border">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="flex-1 rounded-full text-natural-muted hover:text-natural-primary hover:bg-natural-accent"
+                          onClick={() => onEdit(form.id)}
+                        >
+                          <FileText className="mr-2 h-4 w-4" />
+                          Edit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="flex-1 rounded-full text-natural-muted hover:text-natural-primary hover:bg-natural-accent"
+                          onClick={() => onViewResults(form.id)}
+                        >
+                          <BarChart2 className="mr-2 h-4 w-4" />
+                          Results
+                        </Button>
+                      </div>
+                    </div>
+                  </Card>
+                </motion.div>
+              ))}
             </div>
           )}
         </div>

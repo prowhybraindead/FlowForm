@@ -48,7 +48,7 @@ create table if not exists public.form_collaborators (
 
 create table if not exists public.form_audit_logs (
   id uuid primary key default gen_random_uuid(),
-  form_id uuid not null references public.forms(id) on delete cascade,
+  form_id uuid not null,
   actor_user_id uuid references auth.users(id) on delete set null,
   event_type text not null,
   payload jsonb,

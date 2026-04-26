@@ -43,16 +43,23 @@ async function uploadViaTempServer(file: File, options?: UploadImageAssetOptions
 }
 
 export async function uploadImageAsset(file: File, options?: UploadImageAssetOptions): Promise<string> {
-  const enableTempStorage = process.env.NEXT_PUBLIC_ENABLE_TEMP_STORAGE_UPLOADS === 'true';
+  const enableTempStorage = process.env.NEXT_PUBLIC_ENABLE_TEMP_STORAGE_UPLOADS !== 'false';
+  const allowBase64Fallback = process.env.NEXT_PUBLIC_ALLOW_BASE64_FALLBACK === 'true';
 
   if (!enableTempStorage) {
-    return readFileAsDataUrl(file);
+    if (allowBase64Fallback) {
+      return readFileAsDataUrl(file);
+    }
+    throw new Error('Image upload is disabled. Enable temporary storage uploads to continue.');
   }
 
   try {
     return await uploadViaTempServer(file, options);
   } catch (error) {
-    console.error('Temporary storage upload failed, falling back to base64:', error);
-    return readFileAsDataUrl(file);
+    if (allowBase64Fallback) {
+      console.error('Temporary storage upload failed, falling back to base64:', error);
+      return readFileAsDataUrl(file);
+    }
+    throw new Error('Failed to upload image to temporary storage server.');
   }
 }

@@ -267,12 +267,16 @@ export async function updateFormRecord(formId: string, form: Partial<Form>): Pro
 }
 
 export async function deleteFormRecord(formId: string): Promise<void> {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('forms')
     .delete()
-    .eq('id', formId);
+    .eq('id', formId)
+    .select('id');
 
   if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error('Delete failed: form not found or permission denied.');
+  }
 }
 
 export async function incrementFormViews(formId: string): Promise<void> {

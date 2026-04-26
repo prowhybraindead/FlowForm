@@ -382,7 +382,9 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
 
     form.questions.forEach((question) => {
       if (question.type === 'section') {
-        if (currentSection.questions.length > 0) {
+        // Only flush the pre-section default bucket. Marker sections are already added once,
+        // and their questions are mutated by reference as we iterate.
+        if (currentSection.isDefault && currentSection.questions.length > 0) {
           sections.push(currentSection);
         }
 
@@ -659,7 +661,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
               <div className="inline-flex max-w-full items-center gap-3 rounded-full border border-natural-border bg-natural-bg/80 px-3 py-2 text-left">
                 <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-white border border-natural-border flex items-center justify-center">
                   {ownerProfile?.avatarUrl ? (
-                    <img src={ownerProfile.avatarUrl} alt="" className="h-full w-full object-cover" />
+                    <img src={ownerProfile.avatarUrl} alt="" className="h-full w-full object-contain bg-white" />
                   ) : (
                     <span className="text-xs font-bold text-natural-primary">
                       {(ownerProfile?.displayName || 'F').charAt(0).toUpperCase()}
@@ -1174,7 +1176,10 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                           updateAnswer(question, [...currentImages, ...uploadedImages]);
                         } catch (error) {
                           console.error('Response image upload failed:', error);
-                          setErrors(prev => ({ ...prev, [question.id]: 'Failed to upload one or more images' }));
+                          setErrors(prev => ({
+                            ...prev,
+                            [question.id]: error instanceof Error ? error.message : 'Failed to upload one or more images',
+                          }));
                         }
                       }}
                     />
@@ -1274,6 +1279,9 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 const ans = answers[q.id];
                 if (!ans || (Array.isArray(ans) && ans.length === 0)) return null;
                 const formattedAnswer = Array.isArray(ans) ? ans.join('\n') : String(ans);
+                const uploadedImages = q.type === 'image_upload'
+                  ? (Array.isArray(ans) ? ans : [ans]).filter(Boolean)
+                  : [];
 
                 return (
                   <div key={q.id} className="border-b border-natural-border/50 pb-3 last:border-0 last:pb-0">
@@ -1285,9 +1293,33 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                         {q.description}
                       </p>
                     )}
-                    <div className="text-sm text-natural-primary whitespace-pre-wrap break-words font-light">
-                      {formattedAnswer}
-                    </div>
+                    {q.type === 'image_upload' ? (
+                      <div className="space-y-2">
+                        <p className="text-xs text-natural-muted">
+                          Uploaded {uploadedImages.length} image{uploadedImages.length === 1 ? '' : 's'}
+                        </p>
+                        {uploadedImages.length > 0 && (
+                          <div className="grid grid-cols-3 gap-2">
+                            {uploadedImages.slice(0, 6).map((src: string, index: number) => (
+                              <div key={`${q.id}-preview-${index}`} className="aspect-square overflow-hidden rounded-lg border border-natural-border bg-natural-bg">
+                                <img
+                                  src={src}
+                                  alt={`Uploaded preview ${index + 1}`}
+                                  className="h-full w-full object-contain"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {uploadedImages.length > 6 && (
+                          <p className="text-xs text-natural-muted">+{uploadedImages.length - 6} more</p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-natural-primary whitespace-pre-wrap break-words font-light">
+                        {formattedAnswer}
+                      </div>
+                    )}
                   </div>
                 );
               })

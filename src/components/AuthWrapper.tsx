@@ -283,7 +283,7 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
               }
             >
               {user.photoURL ? (
-                <img src={user.photoURL} alt="" className="h-6 w-6 rounded-full object-cover" />
+                <img src={user.photoURL} alt="" className="h-6 w-6 rounded-full object-contain bg-white" />
               ) : (
                 <UserRound className="h-4 w-4" />
               )}
@@ -303,7 +303,7 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
                 <div className="flex items-center gap-4">
                   <div className="h-14 w-14 overflow-hidden rounded-full border border-natural-border bg-natural-bg flex items-center justify-center">
                     {profileAvatarUrl && isValidAvatarUrl(profileAvatarUrl) ? (
-                      <img src={profileAvatarUrl} alt="" className="h-full w-full object-cover" />
+                      <img src={profileAvatarUrl} alt="" className="h-full w-full object-contain bg-white" />
                     ) : (
                       <UserRound className="h-6 w-6 text-natural-muted" />
                     )}

@@ -774,7 +774,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
 
     questions.forEach((question) => {
       if (question.type === 'section') {
-        if (currentSection.questions.length > 0) {
+        if (currentSection.questions.length > 0 || !currentSection.isDefault) {
           sections.push(currentSection);
         }
 
@@ -785,7 +785,6 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           isDefault: false,
           branchToSectionId: question.branchToSectionId,
         };
-        sections.push(currentSection);
         sawSectionMarker = true;
         return;
       }
@@ -793,7 +792,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
       currentSection.questions.push(question);
     });
 
-    if (!sawSectionMarker) {
+    if (currentSection.questions.length > 0 || (sawSectionMarker && !currentSection.isDefault)) {
       sections.push(currentSection);
     }
 
@@ -2032,7 +2031,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                           <div className="flex items-center gap-3 min-w-0">
                             <div className="w-9 h-9 rounded-full border border-natural-border bg-white overflow-hidden flex items-center justify-center shrink-0">
                               {collaborator.avatarUrl ? (
-                                <img src={collaborator.avatarUrl} alt="" className="w-full h-full object-cover" />
+                                <img src={collaborator.avatarUrl} alt="" className="w-full h-full object-contain bg-white" />
                               ) : (
                                 <UserRound className="h-4 w-4 text-natural-muted" />
                               )}

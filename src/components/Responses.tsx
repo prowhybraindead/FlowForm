@@ -105,7 +105,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
 
     form.questions.forEach((question) => {
       if (question.type === 'section') {
-        if (currentSection.questions.length > 0) {
+        if (currentSection.questions.length > 0 || !currentSection.isDefault) {
           sections.push(currentSection);
         }
         currentSection = {
@@ -115,14 +115,13 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
           isDefault: false,
           branchToSectionId: question.branchToSectionId,
         };
-        sections.push(currentSection);
         sawSectionMarker = true;
         return;
       }
       currentSection.questions.push(question);
     });
 
-    if (!sawSectionMarker && currentSection.questions.length > 0) {
+    if (currentSection.questions.length > 0 || (sawSectionMarker && !currentSection.isDefault)) {
       sections.push(currentSection);
     }
 
@@ -385,6 +384,28 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
     if (!form || responses.length === 0) return;
 
     const escapeCSV = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const formatAnswerForCsv = (question: Form['questions'][number], answer: unknown): string => {
+      if (question.type !== 'image_upload') {
+        return Array.isArray(answer) ? answer.join('; ') : String(answer ?? '');
+      }
+
+      const values = Array.isArray(answer) ? answer : [answer];
+      const normalized: string[] = values
+        .filter((item) => item !== undefined && item !== null && item !== '')
+        .map((item) => String(item));
+
+      const urlValues = normalized.filter((item) => /^https?:\/\//i.test(item));
+      const inlineImageCount = normalized.filter((item) => item.startsWith('data:image/')).length;
+
+      if (urlValues.length > 0) {
+        return urlValues.join('; ');
+      }
+      if (inlineImageCount > 0) {
+        return `[legacy-inline-image:${inlineImageCount}]`;
+      }
+
+      return normalized.join('; ');
+    };
     const lines: string[] = [];
 
     lines.push(
@@ -409,7 +430,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
       ];
       form.questions.forEach((question) => {
         const answer = response.answers[question.id];
-        row.push(Array.isArray(answer) ? answer.join('; ') : (answer ?? ''));
+        row.push(formatAnswerForCsv(question, answer));
       });
       lines.push(row.map(escapeCSV).join(','));
     });
@@ -441,7 +462,8 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
       });
     }
 
-    const csvContent = lines.join('\n');
+    // Prefix UTF-8 BOM so Excel on Windows opens Vietnamese text correctly.
+    const csvContent = `\uFEFF${lines.join('\r\n')}`;
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -510,7 +532,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
                 <div>
                   {isChartable ? (
                     <div className="h-[340px] w-full pt-4">
-                      <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                         {question.type === 'checkbox' ? (
                           <BarChart data={chartData} layout="vertical" margin={{ left: 20, right: 30 }}>
                             <XAxis type="number" axisLine={false} tickLine={false} className="text-xs" />
@@ -676,8 +698,8 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
                   <div className="rounded-2xl border border-natural-border p-4">
                     <p className="text-sm font-semibold text-natural-text mb-3">Most Used Routes</p>
                     <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1">
-                      {branchingAnalytics.transitions.slice(0, 12).map((transition) => (
-                        <div key={`${transition.from}-${transition.to}`} className="flex items-center justify-between rounded-xl bg-natural-bg/70 px-3 py-2">
+                      {branchingAnalytics.transitions.slice(0, 12).map((transition, index) => (
+                        <div key={`${transition.from}-${transition.to}-${index}`} className="flex items-center justify-between rounded-xl bg-natural-bg/70 px-3 py-2">
                           <p className="text-sm text-natural-text">
                             {transition.from} <span className="text-natural-muted">→</span> {transition.to}
                           </p>
@@ -713,7 +735,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
               </CardHeader>
               <CardContent className="p-0">
                 <div className="h-[340px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                     <BarChart data={branchingAnalytics.sectionFunnel} margin={{ left: 16, right: 20, top: 10, bottom: 20 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="sectionTitle" tick={{ fontSize: 11 }} interval={0} angle={-15} textAnchor="end" height={70} />
@@ -740,8 +762,8 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
                   {branchingAnalytics.branchOptionFunnel
                     .filter((item) => item.count > 0)
                     .sort((a, b) => b.count - a.count)
-                    .map((item) => (
-                      <div key={`${item.questionId}-${item.optionLabel}`} className="rounded-2xl border border-natural-border bg-natural-bg/60 p-4">
+                    .map((item, index) => (
+                      <div key={`${item.questionId}-${item.optionLabel}-${item.targetLabel}-${index}`} className="rounded-2xl border border-natural-border bg-natural-bg/60 p-4">
                         <p className="text-xs uppercase tracking-widest text-natural-muted">{item.questionTitle}</p>
                         <div className="mt-2 flex items-start justify-between gap-4">
                           <div>
@@ -804,7 +826,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
               </CardHeader>
               <CardContent className="p-0">
                 <div className="h-[320px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                     <LineChart data={branchingAnalytics.completionTrend} margin={{ left: 10, right: 20, top: 10, bottom: 20 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="date" tick={{ fontSize: 11 }} />
@@ -899,7 +921,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
                 }
 
                 return (
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={320}>
                     <PieChart>
                       <Pie
                         data={tzData}

@@ -6,6 +6,8 @@ This folder stores incremental SQL migrations for existing environments.
 
 1. `202604260001_phase4_collaboration_audit_and_route_validation.sql`
 2. `202604260002_fix_forms_update_policy_recursion.sql`
+3. `202604260003_fix_forms_delete_policy.sql`
+4. `202604260004_fix_form_delete_audit_fk_violation.sql`
 
 ## How to apply
 
