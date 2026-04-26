@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Form, Response } from '../types';
 import { getFormRecord, listResponsesForForm } from '../lib/formsApi';
+import { stripRichText } from '../lib/richText';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
@@ -96,7 +97,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
     const sections: Array<{ id: string; title: string; questions: Form['questions']; isDefault: boolean; branchToSectionId?: string | '__submit__' }> = [];
     let currentSection = {
       id: '__default__',
-      title: form.title || 'Form start',
+      title: stripRichText(form.title) || 'Form start',
       questions: [] as Form['questions'],
       isDefault: true,
       branchToSectionId: undefined as string | '__submit__' | undefined,
@@ -110,7 +111,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
         }
         currentSection = {
           id: question.id,
-          title: question.title || 'Untitled section',
+          title: stripRichText(question.title) || 'Untitled section',
           questions: [],
           isDefault: false,
           branchToSectionId: question.branchToSectionId,
@@ -327,7 +328,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
           : (targetId ? (titleById.get(targetId) || 'Unknown section') : 'Default next section');
         return {
           questionId: question.id,
-          questionTitle: question.title || 'Untitled question',
+          questionTitle: stripRichText(question.title) || 'Untitled question',
           optionLabel,
           targetLabel,
           count,
@@ -415,7 +416,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
         'Route Path',
         'Outcome',
         'Visited Sections',
-        ...form.questions.map((q) => q.title),
+        ...form.questions.map((q) => stripRichText(q.title) || 'Untitled question'),
       ].map(escapeCSV).join(',')
     );
 
@@ -468,7 +469,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `${form.title.replace(/\s+/g, '_')}_analytics.csv`);
+    link.setAttribute('download', `${(stripRichText(form.title) || 'form').replace(/\s+/g, '_')}_analytics.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -489,7 +490,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="flex-1 min-w-0">
-          <h2 className="text-4xl font-serif font-light text-natural-primary truncate">{form.title}</h2>
+          <h2 className="text-4xl font-serif font-light text-natural-primary truncate">{stripRichText(form.title) || 'Untitled Form'}</h2>
           <div className="flex items-center gap-2 mt-2 text-natural-muted text-sm font-medium">
             <Users className="h-4 w-4" />
             {responses.length} Collected Insights
@@ -525,7 +526,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
             return (
               <div key={question.id} className="w-full bg-white rounded-[32px] shadow-[0_5px_15px_rgba(0,0,0,0.02)] p-10 border border-natural-border">
                 <div className="mb-8">
-                  <h3 className="text-xl font-medium text-natural-primary mb-1">{question.title}</h3>
+                  <h3 className="text-xl font-medium text-natural-primary mb-1">{stripRichText(question.title) || 'Untitled question'}</h3>
                   <p className="text-xs font-bold uppercase tracking-widest text-natural-muted">{responses.filter(r => r.answers[question.id]).length} responses</p>
                 </div>
                 
@@ -639,7 +640,7 @@ export const Responses: React.FC<ResponsesProps> = ({ formId, onBack }) => {
                   <div className="p-10 space-y-8">
                     {form.questions.map(q => (
                       <div key={q.id} className="space-y-2">
-                        <p className="text-xs font-bold uppercase tracking-widest text-natural-muted">{q.title}</p>
+                        <p className="text-xs font-bold uppercase tracking-widest text-natural-muted">{stripRichText(q.title) || 'Untitled question'}</p>
                         <div className="bg-natural-bg p-4 rounded-2xl border border-natural-border text-natural-text font-light">
                           {q.type === 'image_upload' && response.answers[q.id] ? (
                             <div className="flex flex-wrap gap-4">

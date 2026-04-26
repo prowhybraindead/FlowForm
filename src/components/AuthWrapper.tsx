@@ -211,6 +211,7 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
       <div className="flex min-h-screen flex-col items-center justify-center bg-muted/30 px-6">
         <form onSubmit={handleLogin} className="w-full max-w-sm space-y-6 rounded-[32px] border border-natural-border bg-white p-8 shadow-sm">
           <div className="space-y-2 text-center">
+            <img src="/logo.svg" alt="FlowForm logo" className="mx-auto h-14 w-14 object-contain" />
             <h1 className="text-4xl font-bold tracking-tight">FlowForm</h1>
             <p className="text-sm text-muted-foreground">Sign in with your workspace account.</p>
           </div>
@@ -256,8 +257,8 @@ export const AuthWrapper: React.FC<{ children: React.ReactNode }> = ({ children 
       <header className="sticky top-0 z-50 w-full border-b border-natural-border/80 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/80 h-16 shrink-0">
         <div className="mx-auto flex h-full w-full max-w-[1400px] items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-3">
-            <div className="relative h-10 w-10 rounded-xl bg-gradient-to-br from-natural-primary to-[#181C14] text-white shadow-sm flex items-center justify-center ring-1 ring-black/5">
-              <span className="font-bold text-sm tracking-wide">FF</span>
+            <div className="relative h-10 w-10 rounded-xl bg-white shadow-sm flex items-center justify-center ring-1 ring-black/5 overflow-hidden">
+              <img src="/logo.svg" alt="FlowForm logo" className="h-8 w-8 object-contain" />
               <span className="absolute -bottom-1 -right-1 h-3 w-3 rounded-full bg-emerald-500 border-2 border-white" aria-hidden="true" />
             </div>
             <div className="min-w-0">

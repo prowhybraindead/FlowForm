@@ -6,6 +6,7 @@ import { createResponseRecord, getFormRecord, incrementFormViews } from '../lib/
 import { getUserProfile } from '../lib/profilesApi';
 import { uploadImageAsset } from '../lib/imageUpload';
 import { isFormClosedBySettings } from '../lib/formStatus';
+import { sanitizeRichTextHtml, stripRichText } from '../lib/richText';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -116,7 +117,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
 
     const missing = questionsToValidate?.filter(q => q.required && !answers[q.id]);
     if (missing && missing.length > 0) {
-      toast.error(`Please answer required questions: ${missing.map(m => m.title).join(', ')}`);
+      toast.error(`Please answer required questions: ${missing.map(m => stripRichText(m.title) || 'Untitled question').join(', ')}`);
       return;
     }
 
@@ -168,7 +169,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         if (!data.valid) {
           setSubmitting(false);
           setErrors(prev => ({ ...prev, [q.id]: data.error }));
-          toast.error(`Invalid email in question: ${q.title}`);
+          toast.error(`Invalid email in question: ${stripRichText(q.title) || 'Untitled question'}`);
           return;
         }
       } catch (err) {
@@ -509,7 +510,11 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           <div className="flex justify-center">
             <CheckCircle2 className="h-16 w-16 text-natural-primary" />
           </div>
-          <h2 className="text-2xl font-bold" style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}>{form.title}</h2>
+          <h2
+            className="text-2xl font-bold"
+            style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}
+            dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(form.title) || 'Untitled form' }}
+          />
           
           {isPreview && form.settings?.redirectUrlAfterSubmit ? (
             <div className="bg-blue-50 text-blue-800 p-4 rounded-lg my-4 border border-blue-200">
@@ -680,8 +685,15 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
               <img src={form.theme.logo} alt="Form Logo" className="w-full h-full object-contain" />
             </div>
           )}
-          <h1 className="text-4xl font-serif font-light text-natural-text mb-4" style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}>{form.title}</h1>
-          <p className="text-lg text-natural-muted leading-relaxed font-light">{form.description}</p>
+          <h1
+            className="text-4xl font-serif font-light text-natural-text mb-4"
+            style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}
+            dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(form.title) || 'Untitled form' }}
+          />
+          <div
+            className="text-lg text-natural-muted leading-relaxed font-light"
+            dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(form.description) }}
+          />
         </motion.div>
 
         {showRespondentEmailField && (
@@ -738,8 +750,17 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
             >
             <div className="space-y-3">
               <p className="text-[10px] font-bold uppercase tracking-widest text-natural-muted">Section</p>
-              <h2 className="text-2xl font-serif text-natural-text" style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}>{activeSection.title}</h2>
-              {activeSection.description && <p className="text-natural-muted leading-relaxed whitespace-pre-line">{activeSection.description}</p>}
+              <h2
+                className="text-2xl font-serif text-natural-text"
+                style={{ fontFamily: form.theme?.titleFont || 'var(--font-sans)' }}
+                dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(activeSection.title) || 'Untitled section' }}
+              />
+              {activeSection.description && (
+                <div
+                  className="text-natural-muted leading-relaxed"
+                  dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(activeSection.description) }}
+                />
+              )}
             </div>
             </motion.div>
           )}
@@ -760,7 +781,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                   <div className="w-full h-56 rounded-[18px] bg-white/70 flex items-center justify-center overflow-hidden">
                     <img
                       src={question.image}
-                      alt={question.title}
+                      alt={stripRichText(question.title) || 'Question image'}
                       className={getQuestionImageClassName(question.id)}
                       onLoad={(event) => {
                         const { naturalWidth, naturalHeight } = event.currentTarget;
@@ -777,16 +798,21 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
               )}
               <div className="space-y-2">
                 <Label className="text-xl font-medium text-natural-text leading-snug">
-                  {question.title} 
+                  <span dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(question.title) || 'Untitled question' }} /> 
                   {question.required && <span className="text-destructive ml-2">*</span>}
                 </Label>
-                {question.description && <p className="text-natural-muted leading-relaxed font-light whitespace-pre-line">{question.description}</p>}
+                {question.description && (
+                  <div
+                    className="text-natural-muted leading-relaxed font-light"
+                    dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(question.description) }}
+                  />
+                )}
               </div>
 
               <div className="pt-2">
                 {question.type === 'short_answer' && (
                   <Input 
-                    aria-label={question.title}
+                    aria-label={stripRichText(question.title) || 'Question'}
                     placeholder="Your answer" 
                     value={answers[question.id] || ''}
                     onChange={(e) => updateAnswer(question, e.target.value)}
@@ -799,7 +825,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 {question.type === 'email' && (
                   <Input 
                     type="email"
-                    aria-label={question.title}
+                    aria-label={stripRichText(question.title) || 'Question'}
                     placeholder="Email address" 
                     value={answers[question.id] || ''}
                     onChange={(e) => updateAnswer(question, e.target.value)}
@@ -812,7 +838,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 {question.type === 'number' && (
                   <Input 
                     type="number"
-                    aria-label={question.title}
+                    aria-label={stripRichText(question.title) || 'Question'}
                     placeholder="Number" 
                     value={answers[question.id] || ''}
                     onChange={(e) => updateAnswer(question, e.target.value)}
@@ -826,7 +852,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
 
                 {question.type === 'paragraph' && (
                   <textarea 
-                    aria-label={question.title}
+                    aria-label={stripRichText(question.title) || 'Question'}
                     className={`w-full rounded-[24px] border bg-natural-bg px-6 py-4 text-base focus:outline-none focus:ring-2 focus:ring-natural-primary/10 transition-all font-light resize-none min-h-[120px] ${errors[question.id] ? 'border-destructive' : 'border-natural-border'}`}
                     placeholder="Your answer"
                     rows={4}
@@ -1101,7 +1127,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
 
                 {(question.type === 'dropdown') && (
                   <select 
-                    aria-label={question.title}
+                    aria-label={stripRichText(question.title) || 'Question'}
                     className={`w-full h-14 rounded-2xl border bg-natural-bg px-6 text-base focus:outline-none focus:ring-2 focus:ring-natural-primary/10 transition-all font-light appearance-none hover:bg-white cursor-pointer ${errors[question.id] ? 'border-destructive' : 'border-natural-border'}`}
                     value={answers[question.id] || ''}
                     onChange={(e) => updateAnswer(question, e.target.value)}
@@ -1118,7 +1144,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 {question.type === 'date' && (
                   <Input 
                     type="date"
-                    aria-label={question.title}
+                    aria-label={stripRichText(question.title) || 'Question'}
                     value={answers[question.id] || ''}
                     onChange={(e) => updateAnswer(question, e.target.value)}
                     required={question.required}
@@ -1130,7 +1156,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 {question.type === 'time' && (
                   <Input 
                     type="time"
-                    aria-label={question.title}
+                    aria-label={stripRichText(question.title) || 'Question'}
                     value={answers[question.id] || ''}
                     onChange={(e) => updateAnswer(question, e.target.value)}
                     required={question.required}
@@ -1145,7 +1171,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                       type="file"
                       accept="image/*"
                       multiple
-                      aria-label={question.title}
+                      aria-label={stripRichText(question.title) || 'Question'}
                       id={`image_upload_${question.id}`}
                       className="hidden"
                       onChange={async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1285,13 +1311,15 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
 
                 return (
                   <div key={q.id} className="border-b border-natural-border/50 pb-3 last:border-0 last:pb-0">
-                    <h4 className="font-medium text-sm text-natural-text mb-1 whitespace-pre-line break-words">
-                      {q.title || 'Untitled Question'}
-                    </h4>
+                    <h4
+                      className="font-medium text-sm text-natural-text mb-1 whitespace-pre-line break-words"
+                      dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(q.title) || 'Untitled Question' }}
+                    />
                     {q.description && (
-                      <p className="text-xs text-natural-muted whitespace-pre-line break-words mb-1">
-                        {q.description}
-                      </p>
+                      <div
+                        className="text-xs text-natural-muted whitespace-pre-line break-words mb-1"
+                        dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(q.description) }}
+                      />
                     )}
                     {q.type === 'image_upload' ? (
                       <div className="space-y-2">

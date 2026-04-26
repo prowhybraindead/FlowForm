@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
 import { Form } from '../types';
 import { createFormRecord, deleteFormRecord, listAccessibleForms } from '../lib/formsApi';
+import { stripRichText } from '../lib/richText';
 import { Card, CardHeader, CardTitle, CardDescription, CardFooter } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -96,14 +97,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
     let result = [...forms];
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      result = result.filter(f => f.title.toLowerCase().includes(q) || (f.description && f.description.toLowerCase().includes(q)));
+      result = result.filter((f) => {
+        const title = stripRichText(f.title).toLowerCase();
+        const description = stripRichText(f.description || '').toLowerCase();
+        return title.includes(q) || description.includes(q);
+      });
     }
     
     result.sort((a, b) => {
       if (sortBy === 'newest') return b.updatedAt - a.updatedAt;
       if (sortBy === 'oldest') return a.updatedAt - b.updatedAt;
-      if (sortBy === 'title_asc') return a.title.localeCompare(b.title);
-      if (sortBy === 'title_desc') return b.title.localeCompare(a.title);
+      if (sortBy === 'title_asc') return stripRichText(a.title).localeCompare(stripRichText(b.title));
+      if (sortBy === 'title_desc') return stripRichText(b.title).localeCompare(stripRichText(a.title));
       return 0;
     });
 
@@ -264,7 +269,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
                   <Card className="card-natural interactive-lift group h-full flex flex-col border-transparent hover:border-natural-primary/20 cursor-pointer">
                     <CardHeader className="p-8 pb-4">
                       <div className="flex justify-between items-start mb-2">
-                        <CardTitle className="text-lg font-medium text-natural-primary line-clamp-1">{form.title}</CardTitle>
+                        <CardTitle className="text-lg font-medium text-natural-primary line-clamp-1">{stripRichText(form.title) || 'Untitled Form'}</CardTitle>
                         <DropdownMenu>
                           <DropdownMenuTrigger className="p-2 rounded-full hover:bg-natural-accent transition-colors cursor-pointer inline-flex items-center justify-center" aria-label="Form actions" onClick={(e) => e.stopPropagation()}>
                             <MoreVertical className="h-4 w-4 text-natural-muted" />
@@ -299,7 +304,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onEdit, onViewResults }) =
                         </DropdownMenu>
                       </div>
                       <CardDescription className="text-natural-muted leading-relaxed line-clamp-2">
-                        {form.description || 'No description provided'}
+                        {stripRichText(form.description || '') || 'No description provided'}
                       </CardDescription>
                     </CardHeader>
                     <div className="mt-auto px-8 pb-8 pt-4">

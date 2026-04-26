@@ -6,6 +6,7 @@ import { CollaboratorRole, FormAuditEvent, FormCollaborator, Question, QuestionT
 import { getFormAccessRole, getFormRecord, listFormAuditEvents, listFormCollaborators, removeFormCollaborator, resolveCollaboratorUserIdByEmail, updateFormRecord, upsertFormCollaborator } from '../lib/formsApi';
 import { uploadImageAsset } from '../lib/imageUpload';
 import { isFormClosedBySettings } from '../lib/formStatus';
+import { stripRichText } from '../lib/richText';
 import { useAuthStore } from '../store/useAuthStore';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -80,6 +81,7 @@ import {
 } from './ui/dropdown-menu';
 import { Switch } from './ui/switch';
 import { Label } from './ui/label';
+import { RichTextEditor } from './RichTextEditor';
 import { toast } from 'sonner';
 import { AnimatePresence, motion } from 'motion/react';
 
@@ -765,7 +767,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
     const sections: EditorFlowSection[] = [];
     let currentSection: EditorFlowSection = {
       id: '__default__',
-      title: currentForm.title || 'Intro',
+      title: stripRichText(currentForm.title) || 'Intro',
       questions: [],
       isDefault: true,
       branchToSectionId: undefined,
@@ -780,7 +782,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
 
         currentSection = {
           id: question.id,
-          title: question.title || 'Untitled section',
+          title: stripRichText(question.title) || 'Untitled section',
           questions: [],
           isDefault: false,
           branchToSectionId: question.branchToSectionId,
@@ -855,7 +857,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
         ) {
           warnings.push({
             type: 'invalid_target',
-            message: `Section "${question.title || 'Untitled section'}" routes to a missing section.`,
+            message: `Section "${stripRichText(question.title) || 'Untitled section'}" routes to a missing section.`,
             questionId: question.id,
           });
         }
@@ -869,7 +871,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           if (targetIndex !== undefined && targetIndex <= sourceSectionIndex) {
             warnings.push({
               type: 'backward_route',
-              message: `Section "${question.title || 'Untitled section'}" routes backward and may create loops.`,
+              message: `Section "${stripRichText(question.title) || 'Untitled section'}" routes backward and may create loops.`,
               questionId: question.id,
             });
           }
@@ -884,7 +886,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
       ) {
         warnings.push({
           type: 'invalid_target',
-          message: `Question "${question.title || 'Untitled question'}" routes to a missing section.`,
+          message: `Question "${stripRichText(question.title) || 'Untitled question'}" routes to a missing section.`,
           questionId: question.id,
         });
       }
@@ -898,7 +900,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
         if (targetIndex !== undefined && targetIndex <= sourceSectionIndex) {
           warnings.push({
             type: 'backward_route',
-            message: `Question "${question.title || 'Untitled question'}" routes backward and may create loops.`,
+            message: `Question "${stripRichText(question.title) || 'Untitled question'}" routes backward and may create loops.`,
             questionId: question.id,
           });
         }
@@ -912,7 +914,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           if (!target) {
             warnings.push({
               type: 'empty_option_target',
-              message: `Question "${question.title || 'Untitled question'}" has empty route target on option "${option || `Option ${index + 1}`}".`,
+              message: `Question "${stripRichText(question.title) || 'Untitled question'}" has empty route target on option "${option || `Option ${index + 1}`}".`,
               questionId: question.id,
             });
           }
@@ -924,7 +926,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
         if (!realSectionIdSet.has(target)) {
           warnings.push({
             type: 'invalid_target',
-            message: `Question "${question.title || 'Untitled question'}" has an option route to a missing section.`,
+            message: `Question "${stripRichText(question.title) || 'Untitled question'}" has an option route to a missing section.`,
             questionId: question.id,
           });
           return;
@@ -934,7 +936,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
         if (targetIndex !== undefined && targetIndex <= sourceSectionIndex) {
           warnings.push({
             type: 'backward_route',
-            message: `Question "${question.title || 'Untitled question'}" has an option route that points backward.`,
+            message: `Question "${stripRichText(question.title) || 'Untitled question'}" has an option route that points backward.`,
             questionId: question.id,
           });
         }
@@ -957,7 +959,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           recordEdge({
             type: 'branch',
             targetId: question.branchToSectionId,
-            label: question.title || 'Untitled question',
+            label: stripRichText(question.title) || 'Untitled question',
           });
         }
 
@@ -967,7 +969,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
             recordEdge({
               type: 'branch',
               targetId: target,
-              label: question.title || 'Untitled question',
+              label: stripRichText(question.title) || 'Untitled question',
             });
           });
       });
@@ -980,7 +982,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           recordEdge({
             type: 'branch',
             targetId: target,
-            label: `${decisiveQuestion!.title || 'Untitled question'} (forced)`,
+            label: `${stripRichText(decisiveQuestion!.title) || 'Untitled question'} (forced)`,
           });
         });
       } else if (section.branchToSectionId) {
@@ -1097,6 +1099,7 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
           : headerImagePosition === 'right'
             ? 'center right'
             : 'center center';
+  const compactTitle = stripRichText(currentForm.title) || 'Untitled Form';
   const hasInvalidTargetWarnings = flowInsights.warnings.some((warning) => warning.type === 'invalid_target');
   const hasDirectionalWarnings = flowInsights.warnings.some((warning) => warning.type === 'backward_route' || warning.type === 'possible_cycle');
   const formatAuditEvent = (eventType: string) => {
@@ -1120,8 +1123,9 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
               </Button>
               <div className="h-6 w-[1px] bg-natural-border hidden sm:block"></div>
               <Input 
-                value={currentForm.title} 
+                value={compactTitle}
                 onChange={(e) => updateForm({ title: e.target.value })}
+                placeholder="Form title"
                 className="font-medium text-lg border-transparent hover:bg-natural-accent focus:bg-white transition-all w-64 h-10 rounded-xl"
               />
             </div>
@@ -1296,27 +1300,21 @@ export const Editor: React.FC<EditorProps> = ({ formId, onBack, onPreview }) => 
                   <img src={currentForm.theme.logo} alt="Form Logo" className="w-full h-full object-contain" />
                 </div>
               )}
-              <input 
-                aria-label="Form Title"
-                type="text"
-                value={currentForm.title} 
-                onChange={(e) => updateForm({ title: e.target.value })}
-                placeholder="Form Title"
-                className="w-full text-4xl font-serif font-light focus:outline-none border-b border-transparent focus:border-natural-border pb-3 text-natural-text"
+              <RichTextEditor
+                value={currentForm.title}
+                onChange={(value) => updateForm({ title: value })}
+                placeholder="Form title"
+                singleLine
+                className="w-full"
+                editorClassName="w-full text-4xl font-serif font-light border-b border-transparent pb-3 text-natural-text bg-transparent"
                 style={{ fontFamily: currentForm.theme?.titleFont || 'var(--font-sans)' }}
               />
-              <textarea 
-                aria-label="Form Description"
-                value={currentForm.description} 
-                onChange={(e) => updateForm({ description: e.target.value })}
-                onInput={(e) => {
-                  const target = e.currentTarget;
-                  target.style.height = 'auto';
-                  target.style.height = `${target.scrollHeight}px`;
-                }}
+              <RichTextEditor
+                value={currentForm.description}
+                onChange={(value) => updateForm({ description: value })}
                 placeholder="Form description"
-                rows={3}
-                className="w-full mt-6 text-base text-natural-muted bg-transparent focus:outline-none resize-none leading-relaxed overflow-hidden min-h-[84px]"
+                className="w-full mt-6"
+                editorClassName="w-full min-h-[84px] text-base text-natural-muted bg-transparent leading-relaxed"
                 style={{ fontFamily: currentForm.theme?.bodyFont || 'var(--font-sans)' }}
               />
             </div>
@@ -2305,7 +2303,7 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
   const isSectionQuestion = question.type === 'section';
   const sectionTargets = (allQuestions || [])
     .filter((candidate: any) => candidate.type === 'section' && candidate.id !== question.id)
-    .map((candidate: any) => ({ id: candidate.id, title: candidate.title || 'Untitled section' }));
+    .map((candidate: any) => ({ id: candidate.id, title: stripRichText(candidate.title) || 'Untitled section' }));
   const validSectionTargetIds = new Set(sectionTargets.map((section: { id: string }) => section.id));
   const directTargetWarning = question.branchToSectionId
     && question.branchToSectionId !== '__submit__'
@@ -2364,25 +2362,25 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
           <div className="flex flex-col md:flex-row gap-6 items-start">
             <div className="relative flex-1 w-full space-y-3">
               <div className="relative">
-                <input 
-                  aria-label={isSectionQuestion ? 'Section Title' : 'Question Title'}
+                <RichTextEditor
                   value={question.title}
-                  onChange={(e) => updateQuestion(question.id, { title: e.target.value })}
+                  onChange={(value) => updateQuestion(question.id, { title: value })}
                   placeholder={isSectionQuestion ? 'Section title' : 'Question'}
-                  className="w-full text-xl font-medium bg-natural-bg p-4 pr-8 rounded-2xl focus:outline-none border border-natural-border text-natural-text"
+                  singleLine
+                  className="w-full"
+                  editorClassName="w-full text-xl font-medium bg-natural-bg p-4 pr-8 rounded-2xl border border-natural-border text-natural-text"
                   style={{ fontFamily: bodyFont || 'var(--font-sans)' }}
                 />
                 {question.required && !isSectionQuestion && (
-                  <span className="absolute right-4 top-4 text-destructive text-xl font-medium">*</span>
+                  <span className="absolute right-4 top-14 text-destructive text-xl font-medium">*</span>
                 )}
               </div>
-              <textarea 
-                aria-label={isSectionQuestion ? 'Section Description' : 'Question Description'}
+              <RichTextEditor
                 value={question.description || ''}
-                onChange={(e) => updateQuestion(question.id, { description: e.target.value })}
+                onChange={(value) => updateQuestion(question.id, { description: value })}
                 placeholder={isSectionQuestion ? 'Section description' : 'Description (optional)'}
-                rows={isSectionQuestion ? 3 : 2}
-                className="w-full rounded-2xl border border-natural-border bg-natural-bg px-4 py-3 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/10 resize-none"
+                className="w-full"
+                editorClassName="w-full min-h-[68px] rounded-2xl border border-natural-border bg-natural-bg px-4 py-3 text-sm text-natural-text"
                 style={{ fontFamily: bodyFont || 'var(--font-sans)' }}
               />
             </div>
@@ -2414,7 +2412,7 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                 <div className="w-full h-56 rounded-xl bg-white/70 flex items-center justify-center overflow-hidden">
                   <img
                     src={question.image}
-                    alt={question.title || 'Question image'}
+                    alt={stripRichText(question.title) || 'Question image'}
                     className={getQuestionImageClassName()}
                     onLoad={(event) => {
                       const { naturalWidth, naturalHeight } = event.currentTarget;
@@ -3124,7 +3122,7 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                           >
                             <option value="">Select a previous question...</option>
                             {previousQuestions.map((q: any) => (
-                              <option key={q.id} value={q.id}>{q.title || 'Untitled Question'}</option>
+                              <option key={q.id} value={q.id}>{stripRichText(q.title) || 'Untitled Question'}</option>
                             ))}
                           </select>
                           
