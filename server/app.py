@@ -1,17 +1,54 @@
+import atexit
 import os
+import re
 import secrets
 import shutil
 import sqlite3
+import subprocess
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from platform import machine
 from typing import Any
+from urllib.request import urlretrieve
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
 from werkzeug.utils import secure_filename
+
+
+def load_local_env_files() -> None:
+    """Load simple KEY=VALUE lines from local .env files when process env is missing."""
+    for file_name in (".env.local", ".env"):
+        env_path = Path(file_name)
+        if not env_path.exists():
+            continue
+
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if not key:
+                continue
+
+            if len(value) >= 2 and (
+                (value.startswith('"') and value.endswith('"'))
+                or (value.startswith("'") and value.endswith("'"))
+            ):
+                value = value[1:-1]
+
+            os.environ.setdefault(key, value)
+
+
+load_local_env_files()
 
 APP_PORT = int(os.getenv("PORT", "25534"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./data/uploads")).resolve()
@@ -37,6 +74,30 @@ WEBP_QUALITY = int(os.getenv("WEBP_QUALITY", "70"))
 CLOSED_FORM_IDS = {
     form_id.strip() for form_id in os.getenv("CLOSED_FORM_IDS", "").split(",") if form_id.strip()
 }
+USE_CLOUDFLARE_TUNNEL = os.getenv("USE_CLOUDFLARE_TUNNEL", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+TUNNEL_REQUIRED = os.getenv("TUNNEL_REQUIRED", "0").strip().lower() in {"1", "true", "yes", "on"}
+TUNNEL_CONFIG_PATH = Path(os.getenv("TUNNEL_CONFIG_PATH", "./cloudflared/config.yml")).resolve()
+TUNNEL_METRICS = os.getenv("TUNNEL_METRICS", "127.0.0.1:60123").strip()
+CLOUDFLARE_TUNNEL_TOKEN = os.getenv("CLOUDFLARE_TUNNEL_TOKEN", "").strip()
+TUNNEL_LOG_LEVEL = os.getenv("TUNNEL_LOG_LEVEL", "info").strip() or "info"
+TUNNEL_PROTOCOL = os.getenv("TUNNEL_PROTOCOL", "auto").strip().lower() or "auto"
+TUNNEL_FAIL_ON_EXIT = os.getenv("TUNNEL_FAIL_ON_EXIT", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+TUNNEL_AUTO_INSTALL_CLOUDFLARED = os.getenv(
+    "TUNNEL_AUTO_INSTALL_CLOUDFLARED", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+CLOUDFLARED_BIN_PATH = Path(
+    os.getenv("CLOUDFLARED_BIN_PATH", "./.cloudflared/bin/cloudflared")
+).resolve()
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -50,6 +111,41 @@ else:
     CORS(app, origins=[origin.strip() for origin in ALLOW_ORIGINS.split(",") if origin.strip()])
 
 stop_event = threading.Event()
+tunnel_process: subprocess.Popen[Any] | None = None
+tunnel_exit_code: int | None = None
+tunnel_connected = False
+tunnel_last_event = "not_started"
+tunnel_last_error = ""
+tunnel_recent_logs: deque[str] = deque(maxlen=20)
+tunnel_state_lock = threading.Lock()
+SENSITIVE_LOG_PATTERNS = [
+    re.compile(r"(CLOUDFLARE_TUNNEL_TOKEN:)(\S+)"),
+    re.compile(r"(--token\s+)(\S+)"),
+]
+
+
+def log_line(message: str) -> None:
+    print(message, flush=True)
+
+
+def redact_sensitive_text(text: str) -> str:
+    sanitized = text
+    for pattern in SENSITIVE_LOG_PATTERNS:
+        sanitized = pattern.sub(r"\1[REDACTED]", sanitized)
+    return sanitized
+
+
+def log_tunnel_bootstrap_config() -> None:
+    mode = "token" if CLOUDFLARE_TUNNEL_TOKEN else "config"
+    token_set = bool(CLOUDFLARE_TUNNEL_TOKEN)
+    config_exists = TUNNEL_CONFIG_PATH.exists()
+    log_line(
+        "[tunnel] bootstrap "
+        f"use={USE_CLOUDFLARE_TUNNEL} required={TUNNEL_REQUIRED} fail_on_exit={TUNNEL_FAIL_ON_EXIT} "
+        f"mode={mode} token_set={token_set} config_path={TUNNEL_CONFIG_PATH} config_exists={config_exists} "
+        f"metrics={TUNNEL_METRICS} loglevel={TUNNEL_LOG_LEVEL} protocol={TUNNEL_PROTOCOL} "
+        f"auto_install_cloudflared={TUNNEL_AUTO_INSTALL_CLOUDFLARED} cloudflared_bin_path={CLOUDFLARED_BIN_PATH}"
+    )
 
 
 def utc_now() -> datetime:
@@ -387,14 +483,266 @@ def compression_worker() -> None:
         try:
             compress_old_files_for_closed_forms()
         except Exception as error:
-            print(f"[compression-worker] error: {error}")
+            log_line(f"[compression-worker] error: {error}")
 
         stop_event.wait(COMPRESSION_INTERVAL_SECONDS)
+
+
+def get_tunnel_command() -> list[str]:
+    base = [
+        "cloudflared",
+        "tunnel",
+        "--metrics",
+        TUNNEL_METRICS,
+        "--protocol",
+        TUNNEL_PROTOCOL,
+        "--loglevel",
+        TUNNEL_LOG_LEVEL,
+        "run",
+    ]
+
+    if CLOUDFLARE_TUNNEL_TOKEN:
+        return [*base, "--token", CLOUDFLARE_TUNNEL_TOKEN]
+
+    if not TUNNEL_CONFIG_PATH.exists():
+        raise FileNotFoundError(
+            f"Tunnel config not found at {TUNNEL_CONFIG_PATH}. "
+            "Set CLOUDFLARE_TUNNEL_TOKEN or provide TUNNEL_CONFIG_PATH."
+        )
+
+    return [
+        "cloudflared",
+        "tunnel",
+        "--config",
+        str(TUNNEL_CONFIG_PATH),
+        "--metrics",
+        TUNNEL_METRICS,
+        "--loglevel",
+        TUNNEL_LOG_LEVEL,
+        "run",
+    ]
+
+
+def get_cloudflared_download_url() -> str:
+    architecture = machine().lower()
+    if architecture in {"x86_64", "amd64"}:
+        artifact = "cloudflared-linux-amd64"
+    elif architecture in {"aarch64", "arm64"}:
+        artifact = "cloudflared-linux-arm64"
+    else:
+        raise RuntimeError(
+            f"Unsupported architecture for auto-install cloudflared: {architecture}"
+        )
+
+    return f"https://github.com/cloudflare/cloudflared/releases/latest/download/{artifact}"
+
+
+def ensure_cloudflared_binary() -> str:
+    existing_path = shutil.which("cloudflared")
+    if existing_path:
+        return existing_path
+
+    if CLOUDFLARED_BIN_PATH.exists():
+        CLOUDFLARED_BIN_PATH.chmod(0o755)
+        return str(CLOUDFLARED_BIN_PATH)
+
+    if not TUNNEL_AUTO_INSTALL_CLOUDFLARED:
+        raise FileNotFoundError("cloudflared binary not found in PATH")
+
+    CLOUDFLARED_BIN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    download_url = get_cloudflared_download_url()
+    log_line(f"[tunnel] cloudflared not found, downloading from {download_url}")
+    urlretrieve(download_url, str(CLOUDFLARED_BIN_PATH))
+    CLOUDFLARED_BIN_PATH.chmod(0o755)
+    log_line(f"[tunnel] cloudflared downloaded to {CLOUDFLARED_BIN_PATH}")
+    return str(CLOUDFLARED_BIN_PATH)
+
+
+def remember_tunnel_log(line: str) -> None:
+    global tunnel_connected
+    global tunnel_last_event
+    global tunnel_last_error
+
+    normalized = line.lower()
+    with tunnel_state_lock:
+        tunnel_recent_logs.append(line)
+
+        if "registered tunnel connection" in normalized:
+            tunnel_connected = True
+            tunnel_last_event = "connected"
+            tunnel_last_error = ""
+            return
+
+        if "cloudflared exited with code" in normalized:
+            tunnel_connected = False
+            tunnel_last_event = "exited"
+            return
+
+        if "error" in normalized or " err " in f" {normalized} ":
+            tunnel_last_error = line
+            tunnel_last_event = "error"
+
+
+def stream_cloudflared_output(stream: Any, stream_name: str) -> None:
+    try:
+        for raw_line in iter(stream.readline, ""):
+            line = raw_line.strip()
+            if not line:
+                continue
+            sanitized_line = redact_sensitive_text(line)
+            log_line(f"[tunnel:{stream_name}] {sanitized_line}")
+            remember_tunnel_log(sanitized_line)
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
+def verify_tunnel_boot() -> None:
+    time.sleep(12)
+    with tunnel_state_lock:
+        running = bool(tunnel_process and tunnel_process.poll() is None)
+        connected = tunnel_connected
+        last_error = tunnel_last_error
+
+    if running and not connected:
+        if last_error:
+            log_line(
+                "[tunnel] process is running but still not connected yet. "
+                f"Last error: {last_error}"
+            )
+        else:
+            log_line(
+                "[tunnel] process is running but no successful connector registration yet."
+            )
+
+
+def monitor_cloudflare_tunnel() -> None:
+    global tunnel_process
+    global tunnel_exit_code
+    global tunnel_connected
+    global tunnel_last_event
+
+    current_process = tunnel_process
+    if current_process is None:
+        return
+
+    exit_code = current_process.wait()
+    tunnel_exit_code = int(exit_code)
+    tunnel_connected = False
+    tunnel_last_event = "exited"
+    log_line(f"[tunnel] cloudflared exited with code {exit_code}")
+    tunnel_process = None
+
+    if USE_CLOUDFLARE_TUNNEL and TUNNEL_FAIL_ON_EXIT:
+        log_line("[tunnel] exiting server because TUNNEL_FAIL_ON_EXIT=1")
+        os._exit(1)
+
+
+def start_cloudflare_tunnel() -> None:
+    global tunnel_process
+    global tunnel_last_event
+
+    if not USE_CLOUDFLARE_TUNNEL:
+        return
+
+    try:
+        binary_path = ensure_cloudflared_binary()
+
+        command = get_tunnel_command()
+        command[0] = binary_path
+        safe_command = [part for part in command if part != CLOUDFLARE_TUNNEL_TOKEN]
+        mode = "token" if CLOUDFLARE_TUNNEL_TOKEN else "config"
+        if mode == "token":
+            log_line(
+                "[tunnel] starting cloudflared in token mode "
+                f"(metrics={TUNNEL_METRICS}, protocol={TUNNEL_PROTOCOL}, loglevel={TUNNEL_LOG_LEVEL})"
+            )
+        else:
+            log_line(
+                "[tunnel] starting cloudflared in config mode "
+                f"(config={TUNNEL_CONFIG_PATH}, metrics={TUNNEL_METRICS}, protocol={TUNNEL_PROTOCOL}, loglevel={TUNNEL_LOG_LEVEL})"
+            )
+        log_line(f"[tunnel] cloudflared binary: {binary_path}")
+        log_line(f"[tunnel] command: {' '.join(safe_command)}")
+        tunnel_process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        tunnel_last_event = "starting"
+        log_line(f"[tunnel] cloudflared process started (pid={tunnel_process.pid})")
+
+        if tunnel_process.stdout is not None:
+            stdout_thread = threading.Thread(
+                target=stream_cloudflared_output,
+                args=(tunnel_process.stdout, "stdout"),
+                name="cloudflared-stdout",
+                daemon=True,
+            )
+            stdout_thread.start()
+        if tunnel_process.stderr is not None:
+            stderr_thread = threading.Thread(
+                target=stream_cloudflared_output,
+                args=(tunnel_process.stderr, "stderr"),
+                name="cloudflared-stderr",
+                daemon=True,
+            )
+            stderr_thread.start()
+
+        watcher = threading.Thread(
+            target=monitor_cloudflare_tunnel,
+            name="cloudflared-monitor",
+            daemon=True,
+        )
+        watcher.start()
+        boot_verifier = threading.Thread(
+            target=verify_tunnel_boot,
+            name="cloudflared-boot-verifier",
+            daemon=True,
+        )
+        boot_verifier.start()
+    except Exception as error:
+        message = f"[tunnel] failed to start: {error}"
+        if TUNNEL_REQUIRED:
+            raise RuntimeError(message) from error
+        log_line(message)
+
+
+def stop_cloudflare_tunnel() -> None:
+    global tunnel_process
+
+    if tunnel_process is None:
+        return
+
+    if tunnel_process.poll() is not None:
+        tunnel_process = None
+        return
+
+    tunnel_process.terminate()
+    try:
+        tunnel_process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        tunnel_process.kill()
+    finally:
+        tunnel_process = None
+
+
+atexit.register(stop_cloudflare_tunnel)
 
 
 @app.get("/health")
 def healthcheck():
     disk_usage = shutil.disk_usage(UPLOAD_DIR)
+    tunnel_running = bool(tunnel_process and tunnel_process.poll() is None)
+    with tunnel_state_lock:
+        recent_logs = list(tunnel_recent_logs)
+        last_event = tunnel_last_event
+        last_error = tunnel_last_error
+        connected = tunnel_connected
     return jsonify(
         {
             "ok": True,
@@ -408,6 +756,18 @@ def healthcheck():
             "compression_interval_seconds": COMPRESSION_INTERVAL_SECONDS,
             "max_files_per_form": MAX_FILES_PER_FORM,
             "max_bytes_per_form": MAX_BYTES_PER_FORM,
+            "use_cloudflare_tunnel": USE_CLOUDFLARE_TUNNEL,
+            "tunnel_required": TUNNEL_REQUIRED,
+            "tunnel_running": tunnel_running,
+            "tunnel_connected": connected,
+            "tunnel_last_event": last_event,
+            "tunnel_last_error": last_error,
+            "tunnel_log_level": TUNNEL_LOG_LEVEL,
+            "tunnel_protocol": TUNNEL_PROTOCOL,
+            "tunnel_metrics": TUNNEL_METRICS,
+            "tunnel_pid": tunnel_process.pid if tunnel_running and tunnel_process else None,
+            "tunnel_exit_code": tunnel_exit_code,
+            "tunnel_recent_logs": recent_logs,
         }
     )
 
@@ -557,6 +917,8 @@ def start_background_workers() -> None:
 init_db()
 seed_closed_forms()
 start_background_workers()
+log_tunnel_bootstrap_config()
+start_cloudflare_tunnel()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=APP_PORT)

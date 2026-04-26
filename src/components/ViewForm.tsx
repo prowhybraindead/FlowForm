@@ -23,6 +23,8 @@ interface ViewFormProps {
   isPreview?: boolean;
 }
 
+const brandFooterText = 'FlowForm by Lotus Esports Club';
+
 function normalizeRespondentEmail(email: string) {
   return email.trim().toLowerCase();
 }
@@ -493,6 +495,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                 ? 'This form is temporarily closed by the upload backend and not accepting responses right now.'
                 : 'This form is not currently accepting responses.'}
           </p>
+          <p className="mt-8 text-xs font-medium tracking-wide text-natural-muted">{brandFooterText}</p>
         </div>
       );
     }
@@ -539,6 +542,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
             </Button>
           </div>
         </motion.div>
+        <p className="mt-8 text-center text-xs font-medium tracking-wide text-natural-muted">{brandFooterText}</p>
       </div>
     );
   }
@@ -1276,6 +1280,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
           </div>
         </div>
       </form>
+      <p className="mx-auto mt-8 max-w-[680px] px-4 pb-10 text-center text-xs font-medium tracking-wide text-natural-muted">{brandFooterText}</p>
 
       <Dialog open={showConfirmSubmit} onOpenChange={setShowConfirmSubmit}>
         <DialogContent className="sm:max-w-md bg-white border border-natural-border p-6 shadow-xl max-h-[90vh] flex flex-col overflow-hidden" showCloseButton={true}>

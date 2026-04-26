@@ -1,0 +1,19 @@
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /home/container/.cloudflared/YOUR_TUNNEL_ID.json
+
+# Route browser traffic to internal services in the same Docker network.
+# Replace service hostnames/ports with your real container DNS names.
+ingress:
+  - hostname: app.example.com
+    service: http://frontend:3000
+
+  # Keep frontend and API on the same host to avoid CORS and mixed content.
+  - hostname: app.example.com
+    path: /api/temp-storage/*
+    service: http://127.0.0.1:25534
+
+  # Optional direct API host.
+  - hostname: api.example.com
+    service: http://127.0.0.1:25534
+
+  - service: http_status:404

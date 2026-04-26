@@ -4,6 +4,12 @@ import { Noto_Sans, Noto_Serif } from 'next/font/google';
 import '../index.css';
 import { Toaster } from '../components/ui/sonner';
 
+const siteTitle = process.env.SITE_META_TITLE?.trim() || 'FlowForm';
+const siteDescription =
+  process.env.SITE_META_DESCRIPTION?.trim() || 'Create, share, and analyze forms.';
+const siteUrl = process.env.SITE_URL?.trim() || undefined;
+const siteOgImage = process.env.SITE_OG_IMAGE?.trim() || '/logo.png';
+
 const notoSans = Noto_Sans({
   variable: '--font-noto-sans',
   subsets: ['latin', 'latin-ext', 'vietnamese'],
@@ -19,8 +25,22 @@ const notoSerif = Noto_Serif({
 });
 
 export const metadata: Metadata = {
-  title: 'FlowForm',
-  description: 'Create, share, and analyze forms.',
+  title: siteTitle,
+  description: siteDescription,
+  metadataBase: siteUrl ? new URL(siteUrl) : undefined,
+  openGraph: {
+    title: siteTitle,
+    description: siteDescription,
+    type: 'website',
+    url: siteUrl,
+    images: [{ url: siteOgImage }],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: siteTitle,
+    description: siteDescription,
+    images: [siteOgImage],
+  },
   icons: {
     icon: '/favicon.ico',
     shortcut: '/favicon.ico',
