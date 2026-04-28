@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { Noto_Sans, Noto_Serif } from 'next/font/google';
+import { Analytics } from '@vercel/analytics/next';
 import '../index.css';
 import { Toaster } from '../components/ui/sonner';
 
@@ -54,6 +55,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body className={`${notoSans.variable} ${notoSerif.variable} antialiased`}>
         {children}
         <Toaster />
+        <Analytics />
       </body>
     </html>
   );
