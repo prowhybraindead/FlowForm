@@ -901,19 +901,17 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                       }}
                     />
                   </div>
-                  {question.type === 'image_reader' && (
-                    <div className="flex items-center justify-end gap-2 p-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-9 rounded-full px-3 text-xs"
-                        onClick={() => openImageViewer(question.image!, stripRichText(question.title) || 'Question image')}
-                      >
-                        <Expand className="h-4 w-4 mr-1" />
-                        Fullscreen
-                      </Button>
-                    </div>
-                  )}
+                  <div className="flex items-center justify-end gap-2 p-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-9 rounded-full px-3 text-xs"
+                      onClick={() => openImageViewer(question.image!, stripRichText(question.title) || 'Question image')}
+                    >
+                      <Expand className="h-4 w-4 mr-1" />
+                      Fullscreen
+                    </Button>
+                  </div>
                 </div>
               )}
               <div className="space-y-2">
