@@ -1,4 +1,4 @@
-export type QuestionType = 'short_answer' | 'paragraph' | 'multiple_choice' | 'checkbox' | 'dropdown' | 'date' | 'time' | 'email' | 'number' | 'image_upload' | 'section';
+export type QuestionType = 'short_answer' | 'paragraph' | 'image_reader' | 'multiple_choice' | 'checkbox' | 'dropdown' | 'date' | 'time' | 'email' | 'number' | 'image_upload' | 'section';
 
 export interface Condition {
   questionId: string;

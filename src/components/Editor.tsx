@@ -149,6 +149,7 @@ const QUESTION_TYPES: { type: QuestionType, label: string, icon: any }[] = [
   { type: 'section', label: 'Section', icon: SeparatorHorizontal },
   { type: 'short_answer', label: 'Short answer', icon: Type },
   { type: 'paragraph', label: 'Paragraph', icon: AlignLeft },
+  { type: 'image_reader', label: 'Image reader', icon: ImageIcon },
   { type: 'multiple_choice', label: 'Multiple choice', icon: CircleDot },
   { type: 'checkbox', label: 'Checkboxes', icon: CheckSquare },
   { type: 'dropdown', label: 'Dropdown', icon: ListCollapse },
@@ -2409,11 +2410,11 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
           {question.image && (
             <div className="space-y-3">
               <div className="overflow-hidden rounded-2xl border border-natural-border bg-natural-bg p-2">
-                <div className="w-full h-56 rounded-xl bg-white/70 flex items-center justify-center overflow-hidden">
+                <div className={`w-full rounded-xl bg-white/70 flex items-center justify-center overflow-hidden ${question.type === 'image_reader' ? 'h-[320px] md:h-[460px]' : 'h-56'}`}>
                   <img
                     src={question.image}
                     alt={stripRichText(question.title) || 'Question image'}
-                    className={getQuestionImageClassName()}
+                    className={question.type === 'image_reader' ? 'h-full w-full object-contain' : getQuestionImageClassName()}
                     onLoad={(event) => {
                       const { naturalWidth, naturalHeight } = event.currentTarget;
                       if (naturalWidth > 0 && naturalHeight > 0) {
@@ -2680,6 +2681,16 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
                 className={`w-full h-24 bg-natural-bg rounded-2xl border flex items-start p-4 text-sm text-natural-text outline-none focus:ring-2 focus:ring-natural-primary/10 resize-none ${previewError ? 'border-destructive' : 'border-natural-border'}`} 
               />
               {previewError && <div className="text-destructive text-xs mt-1.5">{previewError}</div>}
+            </div>
+          )}
+          {question.type === 'image_reader' && (
+            <div className="pt-2">
+              <div className="w-full rounded-2xl border border-dashed border-natural-border bg-natural-bg/60 p-5">
+                <p className="text-sm font-medium text-natural-text">Display-only block</p>
+                <p className="mt-1 text-xs text-natural-muted">
+                  Respondents only read the attached image. This block has no answer input.
+                </p>
+              </div>
             </div>
           )}
           {question.type === 'date' && (
@@ -3206,8 +3217,8 @@ const SortableQuestionItem = ({ formId, question, allQuestions, updateQuestion, 
             
             <button type="button" aria-label="Duplicate question" onClick={() => duplicateQuestion(question.id)} className="hover:text-natural-primary transition-colors hover:bg-natural-accent p-2 rounded-lg" title="Duplicate"><Copy className="h-5 w-5" /></button>
             <button type="button" aria-label="Delete question" className="hover:text-destructive transition-colors hover:bg-destructive/10 p-2 rounded-lg" title="Delete" onClick={() => removeQuestion(question.id)}><Trash2 className="h-5 w-5" /></button>
-            {!isSectionQuestion && <div className="h-6 w-[1px] bg-natural-border"></div>}
-            {!isSectionQuestion && <div className="flex items-center gap-3">
+            {!isSectionQuestion && question.type !== 'image_reader' && <div className="h-6 w-[1px] bg-natural-border"></div>}
+            {!isSectionQuestion && question.type !== 'image_reader' && <div className="flex items-center gap-3">
               <span className="text-[11px] font-bold uppercase tracking-widest flex items-center gap-1">
                 Required
                 <Tooltip>

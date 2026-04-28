@@ -14,7 +14,7 @@ import { Label } from './ui/label';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Checkbox } from './ui/checkbox';
 import { toast } from 'sonner';
-import { Check, CheckCircle2, UploadCloud } from 'lucide-react';
+import { Check, CheckCircle2, Expand, RotateCw, UploadCloud, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 
@@ -52,6 +52,17 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
   const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
   const [tempStorageClosed, setTempStorageClosed] = useState(false);
   const [questionImageRatioById, setQuestionImageRatioById] = useState<Record<string, number>>({});
+  const [imageViewerOpen, setImageViewerOpen] = useState(false);
+  const [activeImageSrc, setActiveImageSrc] = useState('');
+  const [activeImageAlt, setActiveImageAlt] = useState('Question image');
+  const [imageRotationDeg, setImageRotationDeg] = useState(0);
+  const [viewerScale, setViewerScale] = useState(1);
+  const [viewerOffset, setViewerOffset] = useState({ x: 0, y: 0 });
+  const pinchStartDistanceRef = useRef<number | null>(null);
+  const pinchStartScaleRef = useRef(1);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const dragOriginOffsetRef = useRef({ x: 0, y: 0 });
+  const lastTapRef = useRef(0);
   const startTime = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -117,7 +128,7 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
       ? activeSection.questions.filter(q => isQuestionVisible(q))
       : form?.questions?.filter(q => isQuestionVisible(q));
 
-    const missing = questionsToValidate?.filter(q => q.required && !answers[q.id]);
+    const missing = questionsToValidate?.filter(q => q.type !== 'image_reader' && q.required && !answers[q.id]);
     if (missing && missing.length > 0) {
       toast.error(`Please answer required questions: ${missing.map(m => stripRichText(m.title) || 'Untitled question').join(', ')}`);
       return;
@@ -472,6 +483,94 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const openImageViewer = (src: string, alt: string) => {
+    setActiveImageSrc(src);
+    setActiveImageAlt(alt);
+    setImageRotationDeg(0);
+    setViewerScale(1);
+    setViewerOffset({ x: 0, y: 0 });
+    setImageViewerOpen(true);
+  };
+
+  const rotateViewerImage = () => {
+    setImageRotationDeg((prev) => (prev + 90) % 360);
+  };
+
+  const clampScale = (nextScale: number) => Math.min(4, Math.max(1, nextScale));
+
+  const getTouchDistance = (touches: React.TouchList) => {
+    if (touches.length < 2) return 0;
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  };
+
+  const handleViewerTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length === 2) {
+      pinchStartDistanceRef.current = getTouchDistance(event.touches);
+      pinchStartScaleRef.current = viewerScale;
+      dragStartRef.current = null;
+      return;
+    }
+
+    if (event.touches.length === 1) {
+      const now = Date.now();
+      if (now - lastTapRef.current < 260) {
+        setViewerScale((prev) => {
+          const next = prev > 1 ? 1 : 2.2;
+          if (next === 1) {
+            setViewerOffset({ x: 0, y: 0 });
+          }
+          return next;
+        });
+        lastTapRef.current = 0;
+        return;
+      }
+      lastTapRef.current = now;
+
+      if (viewerScale > 1) {
+        const touch = event.touches[0];
+        dragStartRef.current = { x: touch.clientX, y: touch.clientY };
+        dragOriginOffsetRef.current = { ...viewerOffset };
+      }
+    }
+  };
+
+  const handleViewerTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length === 2 && pinchStartDistanceRef.current) {
+      event.preventDefault();
+      const nextDistance = getTouchDistance(event.touches);
+      if (!nextDistance) return;
+      const ratio = nextDistance / pinchStartDistanceRef.current;
+      const nextScale = clampScale(pinchStartScaleRef.current * ratio);
+      setViewerScale(nextScale);
+      if (nextScale <= 1.01) {
+        setViewerOffset({ x: 0, y: 0 });
+      }
+      return;
+    }
+
+    if (event.touches.length === 1 && viewerScale > 1 && dragStartRef.current) {
+      event.preventDefault();
+      const touch = event.touches[0];
+      const dx = touch.clientX - dragStartRef.current.x;
+      const dy = touch.clientY - dragStartRef.current.y;
+      setViewerOffset({
+        x: dragOriginOffsetRef.current.x + dx,
+        y: dragOriginOffsetRef.current.y + dy,
+      });
+    }
+  };
+
+  const handleViewerTouchEnd = () => {
+    if (viewerScale <= 1.01) {
+      setViewerScale(1);
+      setViewerOffset({ x: 0, y: 0 });
+    }
+    pinchStartDistanceRef.current = null;
+    dragStartRef.current = null;
+  };
+
   if (loading) return (
     <div className="flex h-screen items-center justify-center">
       <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
@@ -782,11 +881,15 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
             <div className="space-y-6">
               {question.image && (
                 <div className="overflow-hidden rounded-[24px] border border-natural-border bg-natural-bg p-2">
-                  <div className="w-full h-56 rounded-[18px] bg-white/70 flex items-center justify-center overflow-hidden">
+                  <div
+                    className={`w-full rounded-[18px] bg-white/70 flex items-center justify-center overflow-hidden ${
+                      question.type === 'image_reader' ? 'h-[360px] md:h-[620px]' : 'h-56'
+                    }`}
+                  >
                     <img
                       src={question.image}
                       alt={stripRichText(question.title) || 'Question image'}
-                      className={getQuestionImageClassName(question.id)}
+                      className={question.type === 'image_reader' ? 'w-full h-full object-contain' : getQuestionImageClassName(question.id)}
                       onLoad={(event) => {
                         const { naturalWidth, naturalHeight } = event.currentTarget;
                         if (naturalWidth > 0 && naturalHeight > 0) {
@@ -798,6 +901,19 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                       }}
                     />
                   </div>
+                  {question.type === 'image_reader' && (
+                    <div className="flex items-center justify-end gap-2 p-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-9 rounded-full px-3 text-xs"
+                        onClick={() => openImageViewer(question.image!, stripRichText(question.title) || 'Question image')}
+                      >
+                        <Expand className="h-4 w-4 mr-1" />
+                        Fullscreen
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
               <div className="space-y-2">
@@ -865,6 +981,14 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
                     required={question.required}
                     aria-required={question.required}
                   />
+                )}
+                {question.type === 'image_reader' && (
+                  <div className="w-full rounded-[24px] border border-dashed border-natural-border bg-natural-bg/60 px-6 py-6">
+                    <p className="text-sm font-medium text-natural-text">Read-only image content</p>
+                    <p className="mt-1 text-sm text-natural-muted">
+                      This block is for reading the image only and does not require an answer.
+                    </p>
+                  </div>
                 )}
 
                 {question.type === 'multiple_choice' && (
@@ -1281,6 +1405,62 @@ export const ViewForm: React.FC<ViewFormProps> = ({ formId, isPreview = false })
         </div>
       </form>
       <p className="mx-auto mt-8 max-w-[680px] px-4 pb-10 text-center text-xs font-medium tracking-wide text-natural-muted">{brandFooterText}</p>
+
+      <AnimatePresence>
+        {imageViewerOpen && activeImageSrc && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-[110] bg-black/90 backdrop-blur-sm p-3 md:p-6"
+            onClick={() => setImageViewerOpen(false)}
+          >
+            <div className="absolute right-3 top-3 z-[120] flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-full border-white/30 bg-black/50 px-3 text-white hover:bg-black/70"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  rotateViewerImage();
+                }}
+              >
+                <RotateCw className="h-4 w-4 mr-1" />
+                Rotate
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-full border-white/30 bg-black/50 px-3 text-white hover:bg-black/70"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setImageViewerOpen(false);
+                }}
+              >
+                <X className="h-4 w-4 mr-1" />
+                Close
+              </Button>
+            </div>
+
+            <div
+              className="h-full w-full flex items-center justify-center touch-none"
+              onClick={(event) => event.stopPropagation()}
+              onTouchStart={handleViewerTouchStart}
+              onTouchMove={handleViewerTouchMove}
+              onTouchEnd={handleViewerTouchEnd}
+              onTouchCancel={handleViewerTouchEnd}
+            >
+              <img
+                src={activeImageSrc}
+                alt={activeImageAlt}
+                className="max-h-full max-w-full object-contain"
+                style={{ transform: `translate(${viewerOffset.x}px, ${viewerOffset.y}px) scale(${viewerScale}) rotate(${imageRotationDeg}deg)` }}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <Dialog open={showConfirmSubmit} onOpenChange={setShowConfirmSubmit}>
         <DialogContent className="sm:max-w-md bg-white border border-natural-border p-6 shadow-xl max-h-[90vh] flex flex-col overflow-hidden" showCloseButton={true}>
